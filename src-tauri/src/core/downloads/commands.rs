@@ -57,12 +57,12 @@ pub async fn download_files<R: Runtime>(
     }
 
     if cancel_token.is_cancelled() {
-        // A cancelled download owns its `.tmp` and `.url` partials, and nothing
-        // else. `save_path` is the *finished* file: when the download was a
-        // re-fetch of a model already on disk, that is the user's existing
-        // copy, and removing it here turned "cancel" (or a pause, which
-        // cancels the same token) into "delete my model". The partials stay
-        // put — pause/resume is built on them.
+        // A cancelled download owns its `.tmp`, `.url` and `.parts` partials,
+        // and nothing else. `save_path` is the *finished* file: when the
+        // download was a re-fetch of a model already on disk, that is the
+        // user's existing copy, and removing it here turned "cancel" (or a
+        // pause, which cancels the same token) into "delete my model". The
+        // partials stay put — pause/resume is built on them.
         if task.was_superseded() {
             log::info!(
                 "Download task {task_id} was superseded by a newer task for the same id; \

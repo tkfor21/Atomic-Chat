@@ -17,11 +17,12 @@ interface DownloadItem {
 
 /**
  * What the Rust downloader is doing while it has no bytes to report. Emitted
- * during the preflight/GET retry ladders, which used to run in silence — see
- * `DownloadStage` in `src-tauri/src/core/downloads/models.rs`.
+ * during the preflight/GET retry ladders, which used to run in silence, and
+ * when an open transfer goes quiet (`stalled`) — see `DownloadStage` in
+ * `src-tauri/src/core/downloads/models.rs`.
  */
 export type DownloadStage = {
-  kind: 'connecting' | 'retrying'
+  kind: 'connecting' | 'retrying' | 'stalled'
   attempt: number
   maxAttempts: number
 }
@@ -73,6 +74,7 @@ export function buildAuthHeaders(
 
 export default class DownloadManager extends BaseExtension {
   hfToken?: string
+  private ownTasks?: Set<string>
 
   async onLoad() {
     this.registerSettings(SETTINGS)
@@ -108,22 +110,25 @@ export default class DownloadManager extends BaseExtension {
     resume: boolean = false,
     onStage?: (stage: DownloadStage) => void
   ) {
-    // relay tauri events to onProgress callback
-    const unlisten = await listen<DownloadEvent>(
-      `download-${taskId}`,
-      (event) => {
-        const payload = event.payload
-        // A staged event reports status, not bytes: routing it through
-        // `onProgress` would publish transferred=0/total=0 and rewind the bar.
-        if (payload.stage) {
-          onStage?.(payload.stage)
-          return
-        }
-        onProgress?.(payload.transferred, payload.total)
-      }
-    )
-
+    // A task started here is cancelled here, whatever its id looks like.
+    if (!this.ownTasks) this.ownTasks = new Set()
+    this.ownTasks.add(taskId)
+    let unlisten: (() => void) | undefined
     try {
+      // relay tauri events to onProgress callback
+      unlisten = await listen<DownloadEvent>(
+        `download-${taskId}`,
+        (event) => {
+          const payload = event.payload
+          // A staged event reports status, not bytes: routing it through
+          // `onProgress` would publish transferred=0/total=0 and rewind the bar.
+          if (payload.stage) {
+            onStage?.(payload.stage)
+            return
+          }
+          onProgress?.(payload.transferred, payload.total)
+        }
+      )
       await invoke<void>('download_files', {
         items,
         taskId,
@@ -134,12 +139,23 @@ export default class DownloadManager extends BaseExtension {
       console.error('Error downloading task', taskId, error)
       throw error
     } finally {
-      unlisten()
+      unlisten?.()
+      this.ownTasks.delete(taskId)
     }
   }
 
   async cancelDownload(taskId: string) {
     try {
+      // Both llama.cpp providers name backend installs `llamacpp-backend-*`, and the core runs every
+      // backend install on desktop. One this extension did not start is the core's.
+      if (taskId.startsWith('llamacpp-backend-') && !this.ownTasks?.has(taskId)) {
+        await invoke('atomic_core_call', {
+          method: 'POST',
+          path: `/downloads/${taskId}/cancel`,
+          body: null,
+        })
+        return
+      }
       await invoke<void>('cancel_download_task', { taskId })
     } catch (error) {
       console.error('Error cancelling download:', error)

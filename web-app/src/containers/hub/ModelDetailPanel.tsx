@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { IconDownload, IconExternalLink, IconHeart } from '@tabler/icons-react'
-import type { Components } from 'react-markdown'
 import { Button } from '@/components/ui/button'
 import { ModelLogo } from '@/containers/ModelLogo'
-import { RenderMarkdown } from '@/containers/RenderMarkdown'
 import { DownloadOptionsSelect } from '@/containers/hub/DownloadOptionsSelect'
-import { useGeneralSetting } from '@/hooks/useGeneralSetting'
+import { HubReadme } from '@/containers/hub/HubReadme'
 import { useHardware } from '@/hooks/useHardware'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import {
@@ -23,23 +21,6 @@ import { cn } from '@/lib/utils'
 import type { CatalogModel } from '@/services/models/types'
 import type { StaffPick } from '@/services/staff-picks-registry'
 import { useShallow } from 'zustand/shallow'
-
-// HuggingFace READMEs open with a YAML frontmatter block (license, tags,
-// base_model…). Without a frontmatter parser it renders as stray `---` rules
-// and key/value text. `removeYamlFrontMatter` in lib/models assumes LF and no
-// BOM; a README fetched over HTTP frequently has both.
-const stripFrontmatter = (markdown: string): string =>
-  markdown.replace(/^\uFEFF?\s*---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
-
-// Model cards are wallpapered with CI shields, Discord invites and hero
-// banners. They are decorative at best, and at worst they are dozens of
-// remote requests and a layout that jumps as each one lands. Drop every image
-// node — markdown-authored and, thanks to `allowRawHtml`, HTML-authored too.
-const README_COMPONENTS: Components = {
-  img: () => null,
-  picture: () => null,
-  a: ({ ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-}
 
 const relativeTime = (dateString?: string): string | undefined => {
   if (!dateString) return undefined
@@ -75,7 +56,6 @@ export function ModelDetailPanel({
   className,
 }: ModelDetailPanelProps) {
   const { t } = useTranslation()
-  const huggingfaceToken = useGeneralSetting((state) => state.huggingfaceToken)
   const { total_memory, gpus } = useHardware(
     useShallow((s) => ({
       total_memory: s.hardwareData.total_memory,
@@ -88,11 +68,8 @@ export function ModelDetailPanel({
   )
 
   const [stats, setStats] = useState<ModelStats>({})
-  const [readme, setReadme] = useState('')
-  const [readmeLoading, setReadmeLoading] = useState(false)
 
   const modelName = model?.model_name
-  const readmeUrl = model?.readme
 
   useEffect(() => {
     if (!modelName) return
@@ -105,40 +82,6 @@ export function ModelDetailPanel({
       active = false
     }
   }, [modelName])
-
-  useEffect(() => {
-    if (!readmeUrl) {
-      setReadme('')
-      return
-    }
-    let active = true
-    setReadmeLoading(true)
-    setReadme('')
-    // HF rejects an Authorization header on public repos, so try anonymously
-    // first and only retry with the token when the anonymous read fails.
-    fetch(readmeUrl)
-      .then((response) =>
-        !response.ok && huggingfaceToken
-          ? fetch(readmeUrl, {
-              headers: { Authorization: `Bearer ${huggingfaceToken}` },
-            })
-          : response
-      )
-      .then((response) => response.text())
-      .then((content) => {
-        if (!active) return
-        setReadme(stripFrontmatter(content))
-      })
-      .catch((error) => {
-        console.error('Failed to fetch README:', error)
-      })
-      .finally(() => {
-        if (active) setReadmeLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [readmeUrl, huggingfaceToken])
 
   const caps = useMemo(
     () => (model ? deriveCapabilities(model, pick?.categories) : []),
@@ -158,7 +101,8 @@ export function ModelDetailPanel({
     )
   }
 
-  const name = pick?.title || extractModelName(model.model_name) || model.model_name
+  const name =
+    pick?.title || extractModelName(model.model_name) || model.model_name
   const repoId = model.model_name.includes('/')
     ? model.model_name
     : `${model.developer ? `${model.developer}/` : ''}${model.model_name}`
@@ -258,25 +202,7 @@ export function ModelDetailPanel({
         )}
       </section>
 
-      <section className="rounded-lg border border-border bg-card p-4">
-        <h2 className="mb-3 text-sm font-medium">{t('hub:readme')}</h2>
-        {readmeLoading ? (
-          <p className="text-xs text-muted-foreground">
-            {t('hub:loadingModels')}
-          </p>
-        ) : readme ? (
-          <RenderMarkdown
-            allowRawHtml
-            isAnimating={false}
-            components={README_COMPONENTS}
-            content={readme}
-          />
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            {t('hub:readmeUnavailable')}
-          </p>
-        )}
-      </section>
+      <HubReadme url={model.readme} />
     </div>
   )
 }

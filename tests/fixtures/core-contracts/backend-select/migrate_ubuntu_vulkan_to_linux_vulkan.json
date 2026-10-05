@@ -1,0 +1,21 @@
+{
+  "comparator": "json-exact",
+  "expected": "linux-vulkan-x64",
+  "input": {
+    "kind": "migrate",
+    "stored_type": "ubuntu-vulkan-x64",
+    "version_backends": [
+      {
+        "backend": "linux-vulkan-x64",
+        "order": 0,
+        "version": "b10205"
+      }
+    ]
+  },
+  "name": "migrate_ubuntu_vulkan_to_linux_vulkan",
+  "source": {
+    "commit": "7ee71026dfa05e8800bebd587f728ec49b968246",
+    "file": "src-tauri/plugins/tauri-plugin-llamacpp-upstream/src/backend.rs",
+    "provider": "llamacpp-upstream"
+  }
+}

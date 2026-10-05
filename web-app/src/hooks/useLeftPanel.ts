@@ -8,14 +8,11 @@ type LeftPanelStoreState = {
   width: string // Sidebar width in rem (e.g., "15rem")
   projectExpanded: Record<string, boolean>
   pluginsExpanded: boolean
-  /** The Images group's workflow list; forced open while on an images route. */
-  imagesExpanded: boolean
   setLeftPanel: (value: boolean) => void
   setLeftPanelSize: (value: number) => void
   setLeftPanelWidth: (value: string) => void
   setProjectExpanded: (projectId: string, expanded: boolean) => void
   setPluginsExpanded: (expanded: boolean) => void
-  setImagesExpanded: (expanded: boolean) => void
 }
 
 export const useLeftPanel = create<LeftPanelStoreState>()(
@@ -26,7 +23,6 @@ export const useLeftPanel = create<LeftPanelStoreState>()(
       width: '15rem', // Default sidebar width
       projectExpanded: {},
       pluginsExpanded: false,
-      imagesExpanded: false,
       setLeftPanel: (value) => set({ open: value }),
       setLeftPanelSize: (value) => set({ size: value }),
       setLeftPanelWidth: (value) => set({ width: value }),
@@ -38,7 +34,6 @@ export const useLeftPanel = create<LeftPanelStoreState>()(
           },
         })),
       setPluginsExpanded: (expanded) => set({ pluginsExpanded: expanded }),
-      setImagesExpanded: (expanded) => set({ imagesExpanded: expanded }),
     }),
     {
       name: localStorageKey.LeftPanel,

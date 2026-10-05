@@ -37,6 +37,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+# Source, not output: the Rust module that reads the logs, and its log-format fixtures
+!src-tauri/src/core/logs/
+!src-tauri/src/core/logs/testdata/*.log
 
 # Rust / Cargo
 target/
@@ -125,5 +128,5 @@ autoqa/__pycache__
 # Benchmarks
 benchmarks/
 
-# Локальная копия манифеста рекомендаций для `make dev-onboarding-low-spec`.
+# Local copy of the recommendations manifest for `make dev-onboarding-low-spec`.
 web-app/public/dev-recommended.json

@@ -73,13 +73,16 @@ export function DownloadPanel({
   useLayoutEffect(() => {
     if (!visible) return
 
+    // `undefined` until the first look, so a screen without a composer still
+    // gets its first measurement.
+    let anchor: Element | null | undefined
+
     // Measured synchronously rather than in a `requestAnimationFrame`: rAF does
     // not run while the window is hidden, which would leave the panel parked
     // over the composer until the next paint. `setLayout` no-ops when nothing
     // moved, so the bursts a growing textarea produces cost a comparison each.
     const measure = () => {
-      const element = document.querySelector('[data-composer-anchor]')
-      const next = panelLayout(element?.getBoundingClientRect() ?? null, {
+      const next = panelLayout(anchor?.getBoundingClientRect() ?? null, {
         width: window.innerWidth,
         height: window.innerHeight,
       })
@@ -89,18 +92,33 @@ export function DownloadPanel({
           : next
       )
     }
-    measure()
 
     // Only the body and the composer are observed, never the panel, so
     // measuring can't feed back into another resize.
     const observer = new ResizeObserver(measure)
     observer.observe(document.body)
-    const anchor = document.querySelector('[data-composer-anchor]')
-    if (anchor) observer.observe(anchor)
+
+    // Every screen mounts its own composer: the first message on the home
+    // screen swaps the centred one for the new thread's, pinned to the bottom,
+    // without resizing anything the observer watches. Follow the swap, or the
+    // panel stays in the corner over the new composer until something else —
+    // collapsing and expanding it — makes it measure again.
+    const follow = () => {
+      const next = document.querySelector('[data-composer-anchor]')
+      if (next === anchor) return
+      if (anchor) observer.unobserve(anchor)
+      anchor = next
+      if (anchor) observer.observe(anchor)
+      measure()
+    }
+    follow()
+    const swaps = new MutationObserver(follow)
+    swaps.observe(document.body, { childList: true, subtree: true })
     window.addEventListener('resize', measure)
 
     return () => {
       observer.disconnect()
+      swaps.disconnect()
       window.removeEventListener('resize', measure)
     }
   }, [visible, collapsed])

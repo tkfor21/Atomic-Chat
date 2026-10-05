@@ -9,6 +9,7 @@ import { useImageEngine } from '@/hooks/useImageEngine'
 import { useImageForm } from '@/hooks/useImageForm'
 import { useImageGallery } from '@/hooks/useImageGallery'
 import { useImageSetting } from '@/hooks/useImageSetting'
+import { useMediaTarget } from '@/hooks/useMediaTarget'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import type { DiffusionErrorAction } from '@/lib/diffusion/errors'
@@ -65,9 +66,13 @@ export const ImageGenerationPage = memo(function ImageGenerationPage({
     state.installedArtifacts.some((artifact) => artifact.complete)
   )
   const catalog = useImageGenerationStore((state) => state.catalog)
-  const lastError = useImageGenerationStore((state) => state.lastError)
+  // A model-level error filed under the Video page (a video checkpoint that
+  // would not load) is that page's to show; everything else is this page's.
+  const lastError = useImageGenerationStore((state) =>
+    state.lastErrorModality === 'video' ? null : state.lastError
+  )
   const clearError = useImageGenerationStore((state) => state.clearError)
-  const openSetup = useImageGenerationStore((state) => state.openSetup)
+  const installEngine = useImageGenerationStore((state) => state.installEngine)
   const loadModel = useImageGenerationStore((state) => state.loadModel)
   const patchForm = useImageForm((state) => state.patch)
   const draftWidth = useImageForm((state) => state.width)
@@ -78,7 +83,7 @@ export const ImageGenerationPage = memo(function ImageGenerationPage({
   )
   const [modelsOpen, setModelsOpen] = useState(false)
 
-  const modelLoaded = status?.model.state === 'loaded'
+  const modelPicked = useMediaTarget('image').artifactId !== null
   const showLivePreview = generating && viewerMode === 'live'
   const pendingSize = {
     width: currentJob?.request.width || draftWidth,
@@ -135,12 +140,12 @@ export const ImageGenerationPage = memo(function ImageGenerationPage({
           void useImageGenerationStore.getState().updateEngine()
           return
         case 'install':
-          openSetup(1)
+          void installEngine()
           return
         case 'download':
           // The picker lives in the form, which needs the engine first.
           if (engine.installed) setModelsOpen(true)
-          else openSetup(1)
+          else void installEngine()
           return
         case 'openSettings':
           void navigate({ to: route.settings.media })
@@ -175,8 +180,8 @@ export const ImageGenerationPage = memo(function ImageGenerationPage({
     [
       clearError,
       engine.installed,
+      installEngine,
       navigate,
-      openSetup,
       patchForm,
       serviceHub,
       status?.outputDir,
@@ -259,7 +264,7 @@ export const ImageGenerationPage = memo(function ImageGenerationPage({
         {gallery.initialized && gallery.items.length === 0 && !generating ? (
           <div className="min-h-0 flex-1">
             <ImageEmptyState
-              modelLoaded={modelLoaded}
+              modelPicked={modelPicked}
               onDownloadModel={
                 engine.installed && !hasModel ? openModels : undefined
               }

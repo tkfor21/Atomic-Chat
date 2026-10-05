@@ -1,8 +1,8 @@
 /**
- * The image workflows, in the order the sidebar lists them. Pure data: which
- * inputs each one takes and how the form should treat it. Icons and labels
- * live with the components (`containers/images/workflowIcons.tsx`, the
- * `images:workflow.*` keys).
+ * The image workflows, in the order the form's mode selector lists them. Pure
+ * data: which inputs each one takes and how the form should treat it. Icons
+ * and labels live with the components (`containers/images/workflowIcons.tsx`,
+ * the `images:workflow.*` keys).
  */
 
 import type { ImageWorkflowId } from '@/services/diffusion/types'

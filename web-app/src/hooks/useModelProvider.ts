@@ -16,6 +16,16 @@ import { isCloudProvider, isProviderConnected } from '@/lib/cloud-providers'
 const LEGACY_LLAMACPP_PROVIDER = 'llamacpp'
 
 /**
+ * Local engines the app withdrew. Their extension no longer registers them,
+ * but `setProviders` keeps every persisted provider it is not sent, so a copy
+ * an earlier version saved would stay in the picker and in Settings. Apple's
+ * on-device model since 2026-09-30 (ADR
+ * 2026-09-30-hide-the-apple-on-device-provider); drop it from here when its
+ * extension offers it again.
+ */
+const WITHDRAWN_PROVIDERS: ReadonlySet<string> = new Set(['foundation-models'])
+
+/**
  * Identity mapping for a local llama.cpp provider id.
  *
  * Historically (ADR 2026-05-22) Windows shipped only `llamacpp-upstream`, so
@@ -91,6 +101,7 @@ export const useModelProvider = create<ModelProviderState>()(
             // Filter out legacy cortex `llama.cpp` provider for migration
             // Can remove after a couple of releases
             .filter((e) => e.provider !== 'llama.cpp')
+            .filter((e) => !WITHDRAWN_PROVIDERS.has(e.provider))
             .map((provider) => {
               return {
                 ...provider,

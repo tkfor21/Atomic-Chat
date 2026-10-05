@@ -85,6 +85,7 @@ const CLOUD_REASONING_PROVIDERS = new Set<string>([
   'chatgpt',
   'cohere',
   'deepseek',
+  'edenai',
   'fireworks',
   'gemini',
   'google',

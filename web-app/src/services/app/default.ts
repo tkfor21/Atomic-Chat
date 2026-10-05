@@ -2,7 +2,12 @@
  * Default App Service - Generic implementation with minimal returns
  */
 
-import type { AppService, LogEntry } from './types'
+import type {
+  AppService,
+  LogEntry,
+  LogExport,
+  UnifiedLogEntry,
+} from './types'
 import type { AutostartPreference } from '@janhq/core'
 import {
   REMOTE_ACCESS_OFF,
@@ -25,6 +30,14 @@ export class DefaultAppService implements AppService {
       target: 'default',
       message: line ?? '',
     }
+  }
+
+  async readUnifiedLogs(): Promise<UnifiedLogEntry[]> {
+    return []
+  }
+
+  async exportLogs(): Promise<LogExport | null> {
+    return null
   }
 
   async getJanDataFolder(): Promise<string | undefined> {
@@ -56,6 +69,10 @@ export class DefaultAppService implements AppService {
   }
 
   async getInstallerType(): Promise<string | undefined> {
+    return undefined
+  }
+
+  async getCoreVersion(): Promise<string | undefined> {
     return undefined
   }
 

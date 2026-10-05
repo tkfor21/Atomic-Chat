@@ -64,8 +64,10 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))
 
-vi.mock('@/hooks/useHardware', () => ({
-  useHardware: () => ({
+// The store's state is mutable so a test can hand the page facts from the
+// core (`source`) and a usage poll that disagrees with them on GPU count.
+const hardwareStore = vi.hoisted(() => {
+  const defaults = () => ({
     hardwareData: {
       os_type: 'windows',
       os_name: 'Windows 11',
@@ -76,9 +78,24 @@ vi.mock('@/hooks/useHardware', () => ({
         extensions: ['SSE'],
       },
       total_memory: 16384,
-      gpus: [],
+      gpus: [] as Array<Record<string, unknown>>,
+      source: undefined as 'probe' | 'override' | undefined,
+      probed_at: undefined as number | undefined,
     },
-    systemUsage: { cpu: 50, used_memory: 8192, total_memory: 16384, gpus: [] },
+    systemUsage: {
+      cpu: 50,
+      used_memory: 8192,
+      total_memory: 16384,
+      gpus: [] as Array<{ uuid: string; used_memory: number; total_memory: number }>,
+    },
+  })
+  return { state: defaults(), reset: () => Object.assign(hardwareStore.state, defaults()) }
+})
+
+vi.mock('@/hooks/useHardware', () => ({
+  useHardware: () => ({
+    hardwareData: hardwareStore.state.hardwareData,
+    systemUsage: hardwareStore.state.systemUsage,
     setHardwareData: vi.fn(),
     updateSystemUsage: vi.fn(),
     pollingPaused: false,
@@ -168,6 +185,7 @@ import { Route } from '../hardware'
 describe('Hardware Settings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    hardwareStore.reset()
     seedServiceHub({
       hardware: hardwareService as ReturnType<ServiceHub['hardware']>,
       window: {
@@ -241,6 +259,87 @@ describe('Hardware Settings', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('GPUs')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('detection source', () => {
+    it('names the core probe as the source of the facts', async () => {
+      hardwareStore.state.hardwareData.source = 'probe'
+      const Component = Route.component as React.ComponentType
+      render(<Component />)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('settings:hardware.detectionSource.probe')
+        ).toBeInTheDocument()
+      })
+      expect(
+        screen.queryByText('settings:hardware.detectionSource.override')
+      ).not.toBeInTheDocument()
+    })
+
+    it('names an injected override as the source of the facts', async () => {
+      hardwareStore.state.hardwareData.source = 'override'
+      const Component = Route.component as React.ComponentType
+      render(<Component />)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('settings:hardware.detectionSource.override')
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('says nothing about the source when the facts carry none', async () => {
+      const Component = Route.component as React.ComponentType
+      render(<Component />)
+
+      await waitFor(() => {
+        expect(screen.getByText('GPUs')).toBeInTheDocument()
+      })
+      expect(
+        screen.queryByText('settings:hardware.detectionSource.probe')
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByText('settings:hardware.detectionSource.override')
+      ).not.toBeInTheDocument()
+    })
+  })
+
+  describe('detection gap', () => {
+    const usageRow = (uuid: string) => ({
+      uuid,
+      used_memory: 1024,
+      total_memory: 8192,
+    })
+
+    it('warns when the usage poll sees more GPUs than the core', async () => {
+      hardwareStore.state.hardwareData.source = 'probe'
+      hardwareStore.state.hardwareData.gpus = []
+      hardwareStore.state.systemUsage.gpus = [usageRow('a'), usageRow('b')]
+      const Component = Route.component as React.ComponentType
+      render(<Component />)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('settings:hardware.detectionGap')
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('stays quiet when the core sees at least as many GPUs as the poll', async () => {
+      hardwareStore.state.hardwareData.source = 'probe'
+      hardwareStore.state.hardwareData.gpus = [{ name: 'GPU', uuid: 'a' }]
+      hardwareStore.state.systemUsage.gpus = [usageRow('a')]
+      const Component = Route.component as React.ComponentType
+      render(<Component />)
+
+      await waitFor(() => {
+        expect(screen.getByText('GPUs')).toBeInTheDocument()
+      })
+      expect(
+        screen.queryByText('settings:hardware.detectionGap')
+      ).not.toBeInTheDocument()
     })
   })
 })

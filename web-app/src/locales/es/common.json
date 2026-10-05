@@ -35,6 +35,7 @@
   "hub": "Hub",
   "models": "Modelos",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Ayuda y soporte",
   "helpUsImproveJan": "Ayúdanos a mejorar Atomic Bot",
@@ -466,5 +467,12 @@
     "title": "Plugins",
     "emptySkills": "Aún no hay habilidades",
     "manageSkills": "Gestionar habilidades"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Modelo descargado",
+    "modelReadyBody": "{{name}} está listo para usar.",
+    "engineReadyTitle": "Motor instalado",
+    "chatEngineReadyBody": "llama.cpp está listo para ejecutar modelos.",
+    "mediaEngineReadyBody": "El motor de imágenes y video está listo."
   }
 }

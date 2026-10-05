@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +20,7 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
 const modelSelector = vi.hoisted(() => ({
   dispatchDownload: vi.fn(),
   startDownload: () => {},
+  modality: 'image' as 'image' | 'video',
 }))
 
 // The model selector has its own tests; here it exposes the accepted-download
@@ -27,9 +28,12 @@ const modelSelector = vi.hoisted(() => ({
 vi.mock('@/containers/images/ImageModelSelector', () => ({
   ImageModelSelector: ({
     onDownloadStarted,
+    modality,
   }: {
     onDownloadStarted?: (artifactId: string) => void
+    modality?: 'image' | 'video'
   }) => {
+    modelSelector.modality = modality ?? 'image'
     modelSelector.startDownload = () => {
       modelSelector.dispatchDownload()
       onDownloadStarted?.('z-image:q4_k_m')
@@ -86,7 +90,6 @@ describe('ImageSetupDialog', () => {
     useImageGenerationStore.getState().reset()
     useImageGenerationStore.setState({
       setupOpen: true,
-      setupStep: 0,
       status: notInstalled(),
       hostBackendId: 'macos-arm64',
       catalog: makeCatalog(),
@@ -94,61 +97,37 @@ describe('ImageSetupDialog', () => {
     })
   })
 
-  it('leads each step with its own title and one subtitle', () => {
+  it('speaks for the page that opened it and lists that page\'s models', () => {
     render(<ImageSetupDialog />)
-    expect(screen.getByText('images:setup.intro.title')).toBeInTheDocument()
-    expect(screen.getByText('images:setup.intro.description')).toBeInTheDocument()
+    expect(screen.getByTestId('image-setup-title')).toHaveTextContent(
+      'images:setup.model.title'
+    )
+    expect(modelSelector.modality).toBe('image')
   })
 
-  it('ends the tour at the engine: Done, never on to a model step', async () => {
+  it('lists video models when the Video page opened it', () => {
+    useImageGenerationStore.setState({ setupModality: 'video' })
     render(<ImageSetupDialog />)
-    await act(async () => {
-      await userEvent.click(screen.getByText('images:setup.next'))
-    })
-    expect(useImageGenerationStore.getState().setupStep).toBe(1)
-    expect(screen.getByText('images:setup.engine.title')).toBeInTheDocument()
-    expect(screen.queryByText('images:setup.next')).not.toBeInTheDocument()
-    expect(screen.getByTestId('image-setup-engine-done')).toBeDisabled()
-
-    await act(async () => {
-      await userEvent.click(screen.getByText('images:setup.back'))
-    })
-    expect(useImageGenerationStore.getState().setupStep).toBe(0)
-    await act(async () => {
-      await userEvent.click(screen.getByText('images:setup.next'))
-    })
-
-    act(() => {
-      useImageGenerationStore.setState({ status: makeStatus() })
-    })
-
-    // No model on disk: the studio's picker handles that, not the wizard.
-    await act(async () => {
-      await userEvent.click(screen.getByTestId('image-setup-engine-done'))
-    })
-    expect(useImageGenerationStore.getState().setupOpen).toBe(false)
-    expect(useImageGenerationStore.getState().setupStep).toBe(1)
-    expect(useImageSetting.getState().setupCompleted).toBe(true)
+    expect(screen.getByTestId('image-setup-title')).toHaveTextContent(
+      'videos:setup.model.title'
+    )
+    expect(modelSelector.modality).toBe('video')
   })
 
-  it('offers Back from the standalone model list only while the engine is owed', () => {
-    useImageGenerationStore.setState({ setupStep: 2 })
-    const { unmount } = render(<ImageSetupDialog />)
-    expect(screen.getByText('images:setup.back')).toBeInTheDocument()
-    unmount()
-
-    useImageGenerationStore.setState({ setupStep: 2, status: makeStatus() })
+  it('has no tour: no Back, no Next, no engine step', () => {
     render(<ImageSetupDialog />)
     expect(screen.queryByText('images:setup.back')).not.toBeInTheDocument()
+    expect(screen.queryByText('images:setup.next')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('image-engine-install')).not.toBeInTheDocument()
   })
 
-  it('keeps every step description short enough for its two-line slot', () => {
+  it('keeps each description short enough for its two-line slot', () => {
     const MAX = 100
     for (const [locale, bundle] of [
       ['en', en],
       ['ru', ru],
     ] as const) {
-      for (const step of ['intro', 'engine', 'model', 'ready'] as const) {
+      for (const step of ['model', 'ready'] as const) {
         const text = bundle.setup[step].description
         expect(
           text.length,
@@ -161,13 +140,13 @@ describe('ImageSetupDialog', () => {
 
   it('says it is ready once a model has landed, and what to press next', () => {
     const catalog = makeCatalog()
-    useImageGenerationStore.setState({ setupStep: 2, status: makeStatus() })
+    useImageGenerationStore.setState({ status: makeStatus() })
     const { unmount } = render(<ImageSetupDialog />)
     expect(screen.getByTestId('image-setup-title')).toHaveTextContent(
       'images:setup.model.title'
     )
 
-    // The download lands while the wizard is open.
+    // The download lands while the dialog is open.
     act(() => {
       useImageGenerationStore.setState({
         installedArtifacts: listInstalledArtifacts(
@@ -193,9 +172,8 @@ describe('ImageSetupDialog', () => {
     )
   })
 
-  it('keeps the model step headed "get a model" while the engine is missing', () => {
+  it('keeps the list headed "get a model" while the engine is missing', () => {
     useImageGenerationStore.setState({
-      setupStep: 2,
       installedArtifacts: listInstalledArtifacts(
         makeCatalog(),
         makeFilesFor(Z_IMAGE, 'q4_k_m')
@@ -207,80 +185,13 @@ describe('ImageSetupDialog', () => {
     )
   })
 
-  it('keeps the wizard open while installing and reaches the installed state', async () => {
-    install.ensure.mockImplementation(async () => {
-      fake.getStatus.mockResolvedValue(makeStatus())
-      return {
-        tag: 'master-849-d04e895',
-        backendId: 'macos-arm64',
-        backend: 'metal',
-        engine: 'sd-cpp',
-        sha256: null,
-        installedAtMs: 1,
-        dir: '/x',
-      }
-    })
-    useImageGenerationStore.setState({ setupStep: 1 })
-    render(<ImageSetupDialog />)
-
-    await act(async () => {
-      await userEvent.click(screen.getByTestId('image-engine-install'))
-    })
-
-    await waitFor(() =>
-      expect(useImageGenerationStore.getState().status?.install.state).toBe(
-        'installed'
-      )
-    )
-    expect(useImageGenerationStore.getState().setupOpen).toBe(true)
-    expect(useImageGenerationStore.getState().status?.install.state).toBe('installed')
-  })
-
-  it.each([
-    { transferred: 0, total: 0, percent: 0 },
-    { transferred: 50, total: 100, percent: 50 },
-    { transferred: 100, total: 100, percent: 100 },
-  ])(
-    'keeps $percent% engine progress in the same rounded pill',
-    ({ transferred, total, percent }) => {
-      useImageGenerationStore.setState({
-        setupStep: 1,
-        engineInstall: {
-          inFlight: true,
-          transferred,
-          total,
-          error: null,
-        },
-      })
-      render(<ImageSetupDialog />)
-
-      const progress = screen.getByTestId('image-engine-progress')
-      expect(progress).toHaveClass('h-8', 'w-28', 'rounded-full')
-      expect(progress).not.toHaveClass('rounded-md')
-      expect(progress).toHaveTextContent(`${percent}%`)
-    }
-  )
-
-  it('explains when this computer has no engine build', () => {
-    useImageGenerationStore.setState({
-      setupStep: 1,
-      hostBackendId: null,
-      hostBackendReason: 'Intel Macs are not supported.',
-      hostBackendResolved: true,
-    })
-    render(<ImageSetupDialog />)
-    expect(screen.getByText('Intel Macs are not supported.')).toBeInTheDocument()
-    expect(screen.queryByTestId('image-engine-install')).not.toBeInTheDocument()
-  })
-
   it('only allows Done once the engine and a model are both in place', () => {
-    useImageGenerationStore.setState({ setupStep: 2 })
     const neither = render(<ImageSetupDialog />)
     expect(screen.getByTestId('image-setup-done')).toBeDisabled()
     neither.unmount()
 
     // The engine alone is not enough.
-    useImageGenerationStore.setState({ setupStep: 2, status: makeStatus() })
+    useImageGenerationStore.setState({ status: makeStatus() })
     const engineOnly = render(<ImageSetupDialog />)
     expect(screen.getByTestId('image-setup-done')).toBeDisabled()
     engineOnly.unmount()
@@ -289,7 +200,6 @@ describe('ImageSetupDialog', () => {
     const catalog = makeCatalog()
     const files = makeFilesFor(Z_IMAGE, 'q4_k_m')
     useImageGenerationStore.setState({
-      setupStep: 2,
       status: notInstalled(),
       installedArtifacts: listInstalledArtifacts(catalog, files),
     })
@@ -297,7 +207,7 @@ describe('ImageSetupDialog', () => {
     expect(screen.getByTestId('image-setup-done')).toBeDisabled()
     modelOnly.unmount()
 
-    useImageGenerationStore.setState({ setupStep: 2, status: makeStatus() })
+    useImageGenerationStore.setState({ status: makeStatus() })
     render(<ImageSetupDialog />)
     expect(screen.getByTestId('image-setup-done')).toBeEnabled()
   })
@@ -305,7 +215,6 @@ describe('ImageSetupDialog', () => {
   it('marks setup complete on Done', async () => {
     const catalog = makeCatalog()
     useImageGenerationStore.setState({
-      setupStep: 2,
       status: makeStatus(),
       installedArtifacts: listInstalledArtifacts(catalog, makeFilesFor(Z_IMAGE, 'q4_k_m')),
     })
@@ -318,7 +227,6 @@ describe('ImageSetupDialog', () => {
   })
 
   it('closes after a model download start is accepted', () => {
-    useImageGenerationStore.setState({ setupStep: 2 })
     render(<ImageSetupDialog />)
 
     act(() => modelSelector.startDownload())
@@ -332,7 +240,6 @@ describe('ImageSetupDialog', () => {
     modelSelector.dispatchDownload.mockImplementationOnce(() => {
       throw new Error('dispatch failed')
     })
-    useImageGenerationStore.setState({ setupStep: 2 })
     render(<ImageSetupDialog />)
 
     expect(() => modelSelector.startDownload()).toThrow('dispatch failed')
@@ -340,7 +247,6 @@ describe('ImageSetupDialog', () => {
   })
 
   it('can be dismissed half-configured with the close button', async () => {
-    useImageGenerationStore.setState({ setupStep: 2 })
     render(<ImageSetupDialog />)
     expect(screen.getByTestId('image-setup-done')).toBeDisabled()
     await act(async () => {

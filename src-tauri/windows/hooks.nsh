@@ -1,5 +1,6 @@
 ; Atomic Chat — NSIS installer hooks
-; Extends the default Tauri uninstaller to:
+; Extends the default Tauri installer to stop a leftover app core before it
+; overwrites the core's binary, and the default Tauri uninstaller to:
 ;   1. Kill helper processes that hold file locks BEFORE removing files.
 ;   2. Clean application data directories that live outside the Tauri-managed
 ;      bundle ID path when the user opts in to "Delete app data".
@@ -25,6 +26,41 @@
 ; A custom data_folder set by the user via "Change data folder location"
 ; is NOT covered by these hooks — the user is responsible for cleaning it.
 
+!macro NSIS_HOOK_PREINSTALL
+  ; The app starts its core (resources\bin\atomic-chat-app-core.exe) detached,
+  ; and only a full quit through RunEvent::Exit stops it. An update does not
+  ; quit that way: the updater launches this installer and calls
+  ; std::process::exit(0), so the core lives on until its client lease runs
+  ; out (about 45 s) and keeps its binary locked while we overwrite it. /T
+  ; takes its llama-server / sd-server / cloudflared children with it.
+  ;
+  ; Only once the app itself is gone. In an update it has already exited, even
+  ; if its process is still winding down. In a manual install over a running
+  ; app, CheckIfAppIsRunning (right after this hook) asks first: stopping the
+  ; core behind a user who then cancels would break their session, and the app
+  ; would start another one anyway.
+  ${If} $UpdateMode = 1
+    StrCpy $R0 1
+  ${Else}
+    !if "${INSTALLMODE}" == "currentUser"
+      nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+    !else
+      nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
+    !endif
+    ; 0 means the app is running.
+    Pop $R0
+  ${EndIf}
+  ${If} $R0 <> 0
+    nsExec::Exec 'taskkill /F /T /IM "atomic-chat-app-core.exe"'
+    Pop $0
+    ; taskkill exits 0 only when it stopped something; give the kernel a
+    ; moment to release the file handles then.
+    ${If} $0 == 0
+      Sleep 1500
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; Tauri's CheckIfAppIsRunning macro (called later in the Section Uninstall
   ; from the bundle template) already handles the main binary. Here we kill
@@ -34,6 +70,8 @@
   ; We use taskkill so we don't depend on the nsProcess plugin being bundled.
   ; /T terminates child processes too. Errors are silently ignored — the
   ; process may simply not be running.
+  nsExec::Exec 'taskkill /F /T /IM "atomic-chat-app-core.exe"'
+  Pop $0
   nsExec::Exec 'taskkill /F /T /IM "llama-server.exe"'
   Pop $0
   nsExec::Exec 'taskkill /F /T /IM "bun.exe"'

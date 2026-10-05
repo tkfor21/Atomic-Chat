@@ -8,6 +8,7 @@ import {
   LLAMACPP_PROVIDERS,
   mlxModelIds,
   quantModelIds,
+  withStaffPicks,
 } from '../hub-installed'
 
 const gguf = (
@@ -246,5 +247,47 @@ describe('findInstalledLocalModel', () => {
       modelId: 'mlx-community/Qwen3-4B-4bit',
       provider: 'mlx',
     })
+  })
+})
+
+describe('withStaffPicks', () => {
+  // The onboarding pick the curated catalog does not index: its publisher is
+  // outside the scrape, so the Hub resolves it from Hugging Face alone.
+  const nanbeige = gguf('owao/Nanbeige4.2-3B-GGUF', [
+    'owao/Nanbeige4_2-3B-IQ4_XS',
+    'owao/Nanbeige4_2-3B-Q4_K_M',
+  ])
+
+  it('adds the picks the catalog does not index, after the catalog', () => {
+    const catalog = [gguf('unsloth/Qwen3-4B-GGUF', ['Qwen3-4B-Q4_K_M'])]
+    expect(
+      withStaffPicks(catalog, [nanbeige]).map((entry) => entry.model_name)
+    ).toEqual(['unsloth/Qwen3-4B-GGUF', 'owao/Nanbeige4.2-3B-GGUF'])
+  })
+
+  it('keeps the catalog entry when a pick names the same repo, in any case', () => {
+    const indexed = gguf('bartowski/Qwen3-4B-GGUF', ['Qwen3-4B-Q4_K_M'])
+    const pick = gguf('Bartowski/qwen3-4b-gguf', ['Qwen3-4B-Q4_K_M'])
+    const merged = withStaffPicks([indexed], [pick])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(indexed)
+  })
+
+  it('lets the onboarding download open on its pick instead of a bare row named after the file', () => {
+    // What onboarding registers for the pick's IQ4_XS quant.
+    const providers = [
+      provider('llamacpp-upstream', ['owao/Nanbeige4_2-3B-IQ4_XS']),
+    ]
+
+    const catalogOnly = collectInstalledModels([], providers)
+    expect(catalogOnly.map((entry) => entry.model_name)).toEqual([
+      'owao/Nanbeige4_2-3B-IQ4_XS',
+    ])
+
+    const withPicks = collectInstalledModels(
+      withStaffPicks([], [nanbeige]),
+      providers
+    )
+    expect(withPicks).toEqual([nanbeige])
   })
 })

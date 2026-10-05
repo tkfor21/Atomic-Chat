@@ -27,6 +27,7 @@
   "hub": "Concentrateur Hub",
   "models": "Modèles",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Aide & Support",
   "helpUsImproveJan": "Aidez-nous à améliorer Atomic Bot",
@@ -396,5 +397,12 @@
     "title": "Plugins",
     "emptySkills": "Aucune compétence pour l’instant",
     "manageSkills": "Gérer les compétences"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Modèle téléchargé",
+    "modelReadyBody": "{{name}} est prêt à l'emploi.",
+    "engineReadyTitle": "Moteur installé",
+    "chatEngineReadyBody": "llama.cpp est prêt à exécuter des modèles.",
+    "mediaEngineReadyBody": "Le moteur d'images et de vidéo est prêt."
   }
 }

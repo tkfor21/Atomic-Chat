@@ -12,6 +12,8 @@ import {
   isLocalEngineProvider,
   isProviderConnected,
 } from '@/lib/cloud-providers'
+import { PlatformFeatures } from '@/lib/platform/const'
+import { PlatformFeature } from '@/lib/platform/types'
 import { ModelSourceBadge } from '@/components/ModelSourceBadge'
 import {
   IconChevronDown,
@@ -62,6 +64,8 @@ import {
 const isPickerSection = (provider: ModelProvider): boolean =>
   provider.active &&
   !/(?:diffusion|image|video)/i.test(provider.provider) &&
+  (PlatformFeatures[PlatformFeature.TURBOQUANT_ENGINE] ||
+    provider.provider !== 'llamacpp') &&
   (isLocalEngineProvider(provider) || isProviderConnected(provider))
 
 const NON_CHAT_CAPABILITIES = new Set([
@@ -84,7 +88,7 @@ const NON_CHAT_CAPABILITIES = new Set([
 ])
 
 const hasArtifactToken = (id: string): boolean =>
-  /(?:^|[/:._-])(?:backend|diffusion|draft-(?:mtp|dflash|eagle3)|embed(?:ding|dings)?|engine|image|mmproj|projector|rerank(?:er)?|sidecar|stt|tts|video|voice|whisper)(?=$|[/:._-])/i.test(
+  /(?:^|[/:._-])(?:backend|decision|diffusion|draft-(?:mtp|dflash|eagle3)|embed(?:ding|dings)?|engine|image|laya|mmproj|projector|rerank(?:er)?|sidecar|stt|tts|video|voice|whisper)(?=$|[/:._-])/i.test(
     id
   )
 
@@ -315,6 +319,10 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
       // or provider refresh. Last-used/preload must not undo that user choice.
       if (useAppState.getState().userStoppedModels.length > 0) return
 
+      // A failed load leaves the composer empty too (`switchToModel`); putting
+      // the last-used model back would only show the one that just failed.
+      if (useModelLoad.getState().modelLoadError) return
+
       const { preloadModelOnStartup } = useGeneralSetting.getState()
       if (!preloadModelOnStartup) {
         // Preload is disabled: don't pre-select the last used model or
@@ -360,7 +368,7 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
             (p.provider === 'llamacpp-upstream' ||
               p.provider === 'llamacpp' ||
               p.provider === 'mlx') &&
-            p.active &&
+            isPickerSection(p) &&
             p.models.length > 0
         )
         if (localProvider && localProvider.models.length > 0) {
@@ -1038,6 +1046,7 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
 
                           <button
                             type="button"
+                            data-test-id={`provider-settings-${providerInfo.provider}`}
                             aria-label={t(
                               'common:modelPicker.providerSettings',
                               {

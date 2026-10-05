@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { advanceSpeedSample, type SpeedSample } from '@/lib/downloadFormat'
+import {
+  advanceSpeedSample,
+  newSpeedSample,
+  type SpeedSample,
+} from '@/lib/downloadFormat'
 
 /**
  * What the Rust downloader is doing while it has no bytes to report. Mirrors
@@ -27,6 +31,16 @@ export interface DownloadProgressProps {
   // onboarding screen and the panel all quote the same figure, and so the
   // estimate survives the panel being collapsed or unmounted.
   speed: SpeedSample
+  /**
+   * The first byte count this run reported, and when. The terminal
+   * `model_download` event derives the run's average speed from it: the
+   * smoothed `speed` is reset by every stall and says nothing about the run.
+   */
+  transferStart?: { bytes: number; time: number }
+  /** Times the transfer went quiet (`stalled`), for the terminal event. */
+  stalls?: number
+  /** Reconnect attempts reported (`retrying`), for the terminal event. */
+  retries?: number
 }
 
 // ATO-154: parameters needed to resume a paused model download from the
@@ -130,6 +144,10 @@ export const useDownloadStore = create<DownloadState>((set) => ({
       // resumed transfer whose byte counter resets to 0 — are honored
       // instead of being replaced by the stale previous value.
       const nextCurrent = current ?? previous?.current ?? 0
+      const transferStart =
+        previous?.transferStart && nextCurrent >= previous.transferStart.bytes
+          ? previous.transferStart
+          : { bytes: nextCurrent, time: Date.now() }
       return {
         downloads: {
           ...state.downloads,
@@ -140,6 +158,7 @@ export const useDownloadStore = create<DownloadState>((set) => ({
             current: nextCurrent,
             total: total ?? previous?.total ?? 0,
             speed: advanceSpeedSample(previous?.speed, nextCurrent),
+            transferStart,
             // Bytes moved, so whatever the ladder was reporting is stale.
             stage: undefined,
           },
@@ -152,16 +171,33 @@ export const useDownloadStore = create<DownloadState>((set) => ({
   updateStage: (id, stage) =>
     set((state) => {
       const previous = state.downloads[id]
+      const current = previous?.current ?? 0
+      // No bytes are moving while the downloader waits on a quiet connection
+      // or a reconnect. Keeping the last estimate made the panel quote a live
+      // speed and a frozen ETA for a transfer that had stopped (field
+      // feedback, 2026-09-29); dropping it hides the ETA until bytes flow and
+      // the estimate restarts from the new rate.
+      const idle = stage.kind === 'stalled' || stage.kind === 'retrying'
+      const newStall =
+        stage.kind === 'stalled' && previous?.stage?.kind !== 'stalled'
       return {
         downloads: {
           ...state.downloads,
           [id]: {
             ...previous,
-            name: previous?.name ?? '',
+            // A stage can come first (the preflight ladder runs before any
+            // byte): name the row after its id, as `updateProgress` callers
+            // do, so the panel labels it and routes its Cancel by that id.
+            name: previous?.name ?? id,
             progress: previous?.progress ?? 0,
-            current: previous?.current ?? 0,
+            current,
             total: previous?.total ?? 0,
-            speed: advanceSpeedSample(previous?.speed, previous?.current ?? 0),
+            speed: idle
+              ? newSpeedSample(current)
+              : advanceSpeedSample(previous?.speed, current),
+            stalls: (previous?.stalls ?? 0) + (newStall ? 1 : 0),
+            retries:
+              (previous?.retries ?? 0) + (stage.kind === 'retrying' ? 1 : 0),
             stage,
           },
         },

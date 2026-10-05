@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import type { LogEntry } from '@/services/app/types'
 import { useTranslation } from '@/i18n/react-i18next-compat'
+import { formatLogTime } from '@/lib/log-time'
 
 const MCP_LOG_TARGET_PREFIX = 'app_lib::core::mcp'
 const LOG_EVENT_NAME = 'log://log'
@@ -93,16 +94,6 @@ export function MCPLogViewer({ serverName }: Props) {
     }
   }
 
-  const formatTimestamp = (timestamp: string | number) => {
-    const date = new Date(timestamp)
-    return date.toLocaleTimeString('en-US', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  }
-
   return (
     <div
       ref={logsContainerRef}
@@ -118,7 +109,7 @@ export function MCPLogViewer({ serverName }: Props) {
             visibleLogs.map((log, index) => (
               <div key={index} className="mb-1 flex">
                 <span className="text-muted-foreground mr-2 shrink-0">
-                  [{formatTimestamp(log.timestamp)}]
+                  [{formatLogTime(log.timestamp)}]
                 </span>
                 <span
                   className={`mr-2 font-semibold shrink-0 ${getLogLevelColor(

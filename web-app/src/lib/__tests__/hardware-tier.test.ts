@@ -165,6 +165,49 @@ describe('describeHardware', () => {
     })
   })
 
+  describe('Windows on ARM', () => {
+    // Snapdragon reports Adreno with ~512 MiB and RTX Spark N1X reports only
+    // its dedicated carveout; both draw on the shared pool, so RAM is the budget.
+    it('budgets a Snapdragon laptop on RAM, not on the Adreno carveout', () => {
+      const profile = describeHardware({
+        os_type: 'windows',
+        cpu: { arch: 'aarch64' },
+        total_memory: 32 * GIB,
+        gpus: [{ total_memory: 512 }],
+      })
+
+      expect(profile).toMatchObject({
+        tier: 'unified_32',
+        memoryKind: 'unified',
+        budgetMib: 32 * GIB,
+        vramMib: 512,
+        hardCeiling: false,
+      })
+    })
+
+    it('budgets an RTX Spark N1X laptop on RAM, not on the NVML carveout', () => {
+      expect(
+        classifyHardwareTier({
+          os_type: 'windows',
+          cpu: { arch: 'arm64' },
+          total_memory: 128 * GIB,
+          gpus: [{ total_memory: 16 * GIB }],
+        })
+      ).toBe('unified_128')
+    })
+
+    it('keeps an ARM Linux host with a discrete card on its VRAM', () => {
+      expect(
+        classifyHardwareTier({
+          os_type: 'linux',
+          cpu: { arch: 'aarch64' },
+          total_memory: 64 * GIB,
+          gpus: [{ total_memory: 24 * GIB }],
+        })
+      ).toBe('vram_24')
+    })
+  })
+
   describe('machines without a GPU', () => {
     it('applies the unified buckets to ARM hosts', () => {
       const arm = (gib: number) =>

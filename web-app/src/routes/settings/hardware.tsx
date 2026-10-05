@@ -314,6 +314,24 @@ function HardwareContent() {
                     </div>
                   }
                 >
+                  {/* The core is the only source of hardware facts; the usage
+                      poll below still comes from the hardware plugin, so the
+                      two may disagree on how many GPUs there are. */}
+                  {hardwareData.source && (
+                    <p className="text-xs text-muted-foreground/80 mb-2 px-1">
+                      {hardwareData.source === 'override'
+                        ? t('settings:hardware.detectionSource.override')
+                        : t('settings:hardware.detectionSource.probe')}
+                    </p>
+                  )}
+                  {systemUsage.gpus.length > hardwareData.gpus.length && (
+                    <p className="text-xs text-muted-foreground/80 mb-2 px-1">
+                      {t('settings:hardware.detectionGap', {
+                        coreCount: hardwareData.gpus.length,
+                        usageCount: systemUsage.gpus.length,
+                      })}
+                    </p>
+                  )}
                   {hardwareData.gpus.length > 0 &&
                     llamacppDevices.length === 0 && (
                       <div className="mb-3">

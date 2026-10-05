@@ -18,6 +18,7 @@ import {
   Q8_ID,
   Z_IMAGE,
 } from '@/lib/diffusion/__tests__/image-fixtures'
+import { LTX_2, WAN_22 } from '@/lib/diffusion/__tests__/video-fixtures'
 import {
   diffusionDownloadTaskId,
   listInstalledArtifacts,
@@ -54,7 +55,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/containers/chatInput/useTauriDragDrop', () => ({
   useTauriDragDrop: () => undefined,
 }))
-vi.mock('@/lib/notifications', () => ({ notifyThreadCompleted: vi.fn() }))
+vi.mock('@/lib/notifications', () => ({ notifyWhenAway: vi.fn() }))
 vi.mock('@/lib/telemetry-queue', () => ({ queuedCapture: vi.fn() }))
 vi.mock('@/hooks/useHardwareTier', () => ({
   useHardwareTier: () => ({
@@ -112,6 +113,7 @@ async function seedImageStudio() {
       modelsRoot: MODELS_ROOT,
       backendsRoot: '/data/diffusion/backends',
       imagesDir: '/data/images',
+      videosDir: '/data/videos',
     },
   })
   seedServiceHub({ diffusion: makeFakeDiffusion() })
@@ -410,8 +412,8 @@ describe('Image model page-row geometry', () => {
 
     expect(within(installed).queryByText('Good fit')).toBeNull()
     expect(within(installed).queryByText(/GB/)).toBeNull()
-    expect(within(available).queryByText('Good fit')).toBeNull()
-    expect(within(available).queryByText(/GB/)).toBeNull()
+    expect(within(available).getByText('Good fit')).toBeVisible()
+    expect(within(available).getByText(/GB/)).toBeVisible()
     expect(
       within(available).getByRole('button', { name: 'Download' })
     ).toBeVisible()
@@ -458,6 +460,89 @@ describe('Image model page-row geometry', () => {
     expect(within(availableQuant).getByText('Download')).toBeVisible()
     expectNoHorizontalOverflow(view.container)
   })
+
+  it.each([
+    { fontSize: DEFAULT_FONT_SIZE, theme: 'light' as const },
+    { fontSize: XL_FONT_SIZE, theme: 'dark' as const },
+  ])(
+    'shows the fit and the whole size of the longest quant on its card in the open picker at 1024/$fontSize/$theme',
+    async ({ fontSize, theme }) => {
+      setFontSize(fontSize)
+      setTheme(theme)
+      // Worst-case copy from the catalog: its longest quant labels, with a
+      // two-digit GB size behind each of the two wider badges (16 GiB VRAM).
+      const onlyQuant = (
+        family: typeof LTX_2,
+        label: string,
+        bytes: number
+      ): typeof LTX_2 => ({
+        ...family,
+        transformer: {
+          ...family.transformer,
+          quants: [
+            {
+              ...family.transformer.quants[0],
+              id: label.toLowerCase(),
+              label,
+              bytes,
+              recommended: true,
+            },
+          ],
+        },
+      })
+      const catalog = makeCatalog([
+        onlyQuant(LTX_2, 'UD_Q3_K_M', 22_000_000_000),
+        onlyQuant(WAN_22, 'UD_Q4_K_M', 9_000_000_000),
+      ])
+      act(() => {
+        useImageGenerationStore.setState({
+          catalog,
+          modelFiles: [],
+          installedArtifacts: [],
+          status: makeStatus(),
+        })
+      })
+
+      render(
+        withTranslations(
+          <ImageModelPicker open onOpenChange={vi.fn()} modality="video" />
+        )
+      )
+      // The popover's zoom-in starts once it has been positioned, after the
+      // first settle has already collected the running animations.
+      await act(async () => {
+        await settle()
+        await settle()
+      })
+
+      const panel = screen.getByTestId('image-model-selector').parentElement!
+      for (const [familyId, fit, size] of [
+        ['ltx-2', 'Won’t fit', '31.16 GB'],
+        ['wan2.2-ti2v-5b', 'Might fit', '13.04 GB'],
+      ]) {
+        const family = screen.getByTestId(`family-${familyId}`)
+        const row = family.querySelector<HTMLElement>('[data-compact-row]')!
+        const meta = within(row).getByTestId('image-model-download-meta')
+        const badge = within(meta).getByText(fit)
+        const sizeText = within(meta).getByText(size)
+        const trigger = within(row).getByRole('button', { name: /Select/ })
+        const download = within(row).getByRole('button', { name: 'Download' })
+
+        expect(badge).toBeVisible()
+        expectOneLine(sizeText)
+        expect(sizeText.scrollWidth).toBeLessThanOrEqual(sizeText.clientWidth)
+        expect(badge.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+          trigger.getBoundingClientRect().right
+        )
+        expect(download.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+          sizeText.getBoundingClientRect().right
+        )
+        expect(download.getBoundingClientRect().width).toBe(96)
+        expectNoHorizontalOverflow(family)
+      }
+      expectNoHorizontalOverflow(panel)
+    }
+  )
 
   it.each([
     { fontSize: DEFAULT_FONT_SIZE, theme: 'light' as const },

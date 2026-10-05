@@ -47,6 +47,8 @@ export function createMockServiceHub(
     voice: overrides.voice ?? (emptyService as ServiceInstances['voice']),
     diffusion:
       overrides.diffusion ?? (emptyService as ServiceInstances['diffusion']),
+    decision:
+      overrides.decision ?? (emptyService as ServiceInstances['decision']),
   }
 
   return {
@@ -74,6 +76,7 @@ export function createMockServiceHub(
     uploads: () => services.uploads,
     voice: () => services.voice,
     diffusion: () => services.diffusion,
+    decision: () => services.decision,
   }
 }
 

@@ -6,7 +6,6 @@ import {
   makeCapabilities,
   makeFakeDiffusion,
   makeLoadedStatus,
-  Q4_ID,
   type FakeDiffusion,
 } from '@/lib/diffusion/__tests__/image-fixtures'
 import { seedServiceHub } from '@/test/service-hub'
@@ -19,13 +18,14 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
         : key,
   }),
 }))
+const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
     <a href={to}>{children}</a>
   ),
 }))
-vi.mock('@/lib/notifications', () => ({ notifyThreadCompleted: vi.fn() }))
+vi.mock('@/lib/notifications', () => ({ notifyWhenAway: vi.fn() }))
 vi.mock('@/lib/telemetry-queue', () => ({ queuedCapture: vi.fn() }))
 vi.mock('@/containers/chatInput/useTauriDragDrop', () => ({
   useTauriDragDrop: vi.fn(),
@@ -86,6 +86,8 @@ const ALL_WORKFLOWS: ImageWorkflowId[] = [
   'edit',
 ]
 const SOURCE = { path: '/pics/in.png', width: 1024, height: 768 }
+/** FLUX.2 Klein runs every workflow, so the resident model suits each one. */
+const KLEIN_ID = 'flux.2-klein:q4_k_m'
 
 describe('ImagePromptForm per workflow', () => {
   let fake: FakeDiffusion
@@ -98,6 +100,7 @@ describe('ImagePromptForm per workflow', () => {
   })
 
   beforeEach(async () => {
+    navigate.mockClear()
     localStorage.clear()
     await useImageForm.persist.rehydrate()
     await useImageSetting.persist.rehydrate()
@@ -109,11 +112,14 @@ describe('ImagePromptForm per workflow', () => {
       maskBase64: null,
       referenceImages: [],
     })
-    useImageSetting.setState({ selectedArtifactId: Q4_ID, advancedOpen: false })
+    useImageSetting.setState({
+      selectedArtifactId: KLEIN_ID,
+      advancedOpen: false,
+    })
     useImageGenerationStore.getState().reset()
     useImageGalleryStore.getState().reset()
     useImageGenerationStore.setState({
-      status: makeLoadedStatus(Q4_ID),
+      status: makeLoadedStatus(KLEIN_ID),
       capabilities: makeCapabilities({ workflows: ALL_WORKFLOWS }),
     })
     fake = makeFakeDiffusion()
@@ -130,17 +136,42 @@ describe('ImagePromptForm per workflow', () => {
     return fake.generate.mock.calls[0][0]
   }
 
-  it('titles the column after the workflow and asks for a source before generating', () => {
+  it('heads the column with the page, names the workflow in the pill under it and asks for a source before generating', () => {
     useImageForm.setState({ workflow: 'transform' })
     render(<ImagePromptForm />)
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      'images:page.title'
+    )
+    expect(screen.getByTestId('image-page-subtitle')).toHaveTextContent(
+      'images:page.subtitle'
+    )
     expect(screen.getByTestId('image-workflow-title')).toHaveTextContent(
       'images:workflow.transform.title'
     )
-    expect(
-      screen.getByText('images:workflow.transform.hint')
-    ).toBeInTheDocument()
     expect(screen.getByTestId('image-source-dropzone')).toBeInTheDocument()
     expect(screen.getByTestId('image-generate')).toBeDisabled()
+  })
+
+  it('picks the workflow in the pill, which navigates to its route', async () => {
+    useImageForm.setState({ workflow: 'transform' })
+    render(<ImagePromptForm />)
+
+    await userEvent.click(screen.getByTestId('image-workflow-select'))
+    for (const workflow of ALL_WORKFLOWS) {
+      expect(
+        screen.getByTestId(`image-workflow-option-${workflow}`)
+      ).toHaveTextContent(`images:workflow.${workflow}.title`)
+    }
+    expect(
+      screen.getByTestId('image-workflow-option-transform')
+    ).toHaveAttribute('data-selected', 'true')
+
+    await userEvent.click(screen.getByTestId('image-workflow-option-inpaint'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/images/inpaint' })
+
+    await userEvent.click(screen.getByTestId('image-workflow-select'))
+    await userEvent.click(screen.getByTestId('image-workflow-option-create'))
+    expect(navigate).toHaveBeenLastCalledWith({ to: '/images/' })
   })
 
   it('keeps the embedded Image Generation API available for a source workflow', async () => {

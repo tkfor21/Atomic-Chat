@@ -1,0 +1,21 @@
+{
+  "comparator": "json-exact",
+  "expected": "linux-cpu-x64",
+  "input": {
+    "kind": "migrate",
+    "stored_type": "linux-avx2-x64",
+    "version_backends": [
+      {
+        "backend": "linux-cpu-x64",
+        "order": 1,
+        "version": "b7524"
+      }
+    ]
+  },
+  "name": "migrate_linux_avx2_to_cpu_when_available",
+  "source": {
+    "commit": "7ee71026dfa05e8800bebd587f728ec49b968246",
+    "file": "src-tauri/plugins/tauri-plugin-llamacpp-upstream/src/backend.rs",
+    "provider": "llamacpp-upstream"
+  }
+}

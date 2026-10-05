@@ -74,4 +74,12 @@ export enum PlatformFeature {
   // Local image (and later video) generation. Needs the native diffusion
   // plugin that supervises `sd-server`, so desktop only.
   MEDIA_GENERATION = 'mediaGeneration',
+
+  // Remote access over the internet via the bundled cloudflared tunnel. LAN
+  // access to the local server is not part of it.
+  REMOTE_ACCESS = 'remoteAccess',
+
+  // The TurboQuant llama.cpp fork (`llamacpp` provider). It has no Windows
+  // arm64 build, where upstream llama.cpp is the only engine.
+  TURBOQUANT_ENGINE = 'turboquantEngine',
 }

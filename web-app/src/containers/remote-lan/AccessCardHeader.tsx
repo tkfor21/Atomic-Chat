@@ -16,8 +16,8 @@ const MESSAGE_TONE: Record<AccessMessage['tone'], string> = {
 }
 
 /**
- * Top of both cards on Settings → Remote & LAN: what it is, the state it is in,
- * the one action, and the one line that explains the state.
+ * Top of both Remote & LAN cards on the API screen: what it is, the state it
+ * is in, the one action, and the one line that explains the state.
  *
  * The action is a button rather than a `Switch` on purpose. It is asynchronous
  * and it can fail; a switch would have to show "on" before anything is, or

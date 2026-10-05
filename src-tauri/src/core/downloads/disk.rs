@@ -16,7 +16,7 @@
 //! carry no path or hostname — the PII contract for the event still holds.
 
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Subcauses of a filesystem failure. Kept in sync with `DownloadFailureReason`
 /// on the frontend; `disk_io` stays the catch-all so the split is additive.
@@ -176,17 +176,15 @@ pub fn free_space_report(target_dir: &Path) -> FreeSpaceReport {
     }
 }
 
-/// How many bytes of `total_size` still have to be written, given the partial
-/// files already on disk for a resumed download.
+/// How many bytes of `total_size` still have to be written, given what a
+/// resumed download already has on disk per file.
 ///
 /// Without this a resumed 20 GB download would be refused on a disk with 19 GB
-/// free even when 15 GB of it is already downloaded.
-pub fn remaining_bytes(total_size: u64, partial_paths: &[PathBuf]) -> u64 {
-    let already: u64 = partial_paths
-        .iter()
-        .filter_map(|path| std::fs::metadata(path).ok())
-        .map(|meta| meta.len())
-        .sum();
+/// free even when 15 GB of it is already downloaded. The counts come from
+/// `segmented::downloaded_bytes_on_disk`, not from the partial's length: a
+/// multi-connection partial is created at full size and filled in place.
+pub fn remaining_bytes(total_size: u64, already_downloaded: &[u64]) -> u64 {
+    let already: u64 = already_downloaded.iter().sum();
     total_size.saturating_sub(already)
 }
 
@@ -251,9 +249,9 @@ const MAX_PATH: usize = 260;
 /// Reject a save path that will not survive the Windows path limit.
 ///
 /// HuggingFace repo ids nest deeply (`unsloth/Model-Name-Long-GGUF/file.gguf`)
-/// under an already-long per-user data folder, and the downloader appends
-/// `.tmp` on top, so the partial file is what actually overflows first — that
-/// is the length checked here.
+/// under an already-long per-user data folder, and the downloader appends its
+/// sidecar extensions on top, so the longest sidecar is what actually
+/// overflows first — that is the length checked here.
 #[cfg(windows)]
 pub fn ensure_path_within_limit(save_path: &Path) -> Result<(), String> {
     // A verbatim path (`\\?\C:\...`) bypasses the limit entirely.
@@ -262,9 +260,10 @@ pub fn ensure_path_within_limit(save_path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    // `.tmp` is appended to the save path while downloading, and the `.url`
-    // sidecar is the same length, so the partial is the longest name we write.
-    let effective = text.chars().count() + ".tmp".len();
+    // `.tmp` / `.url` are appended while downloading, and a multi-connection
+    // download also writes its segment map as `.parts`, through `.parts.new`
+    // — the longest name the downloader creates.
+    let effective = text.chars().count() + ".parts.new".len();
     if effective < MAX_PATH {
         return Ok(());
     }
@@ -287,6 +286,7 @@ pub fn ensure_path_within_limit(_save_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn os_error(code: i32) -> std::io::Error {
         std::io::Error::from_raw_os_error(code)
@@ -379,18 +379,12 @@ mod tests {
 
     #[test]
     fn remaining_bytes_discounts_existing_partials() {
-        let dir = tempfile::tempdir().unwrap();
-        let partial = dir.path().join("model.gguf.tmp");
-        std::fs::write(&partial, vec![0u8; 4096]).unwrap();
-
-        assert_eq!(remaining_bytes(10_000, &[partial.clone()]), 10_000 - 4096);
-        // A partial that is not there yet must not underflow the requirement.
-        assert_eq!(
-            remaining_bytes(10_000, &[dir.path().join("absent.tmp")]),
-            10_000
-        );
-        // Nor may a partial larger than the total wrap around.
-        assert_eq!(remaining_bytes(1_000, &[partial]), 0);
+        assert_eq!(remaining_bytes(10_000, &[4096]), 10_000 - 4096);
+        assert_eq!(remaining_bytes(10_000, &[4096, 1000]), 10_000 - 5096);
+        // Nothing on disk yet leaves the whole requirement.
+        assert_eq!(remaining_bytes(10_000, &[]), 10_000);
+        // A partial larger than the total must not wrap around.
+        assert_eq!(remaining_bytes(1_000, &[4096]), 0);
     }
 
     #[test]

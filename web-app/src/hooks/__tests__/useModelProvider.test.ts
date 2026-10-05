@@ -505,6 +505,48 @@ describe('useModelProvider - turboquant first-registration default', () => {
   })
 })
 
+describe('useModelProvider - withdrawn providers', () => {
+  beforeEach(() => {
+    seedServiceHub({ path: { sep: () => '/' } as PathService })
+    localStorageMock.getItem.mockReturnValue(null)
+  })
+
+  it('drops the Apple on-device provider an earlier version persisted, and a selection on it', () => {
+    const appleModel = { id: 'apple/on-device', capabilities: ['tools'] }
+    act(() => {
+      useModelProvider.setState({
+        providers: [
+          {
+            provider: 'foundation-models',
+            active: true,
+            persist: true,
+            models: [appleModel],
+            settings: [],
+          },
+          { provider: 'openai', active: true, models: [], settings: [] },
+        ] as any,
+        selectedProvider: 'foundation-models',
+        selectedModel: appleModel as any,
+        deletedModels: [],
+      })
+    })
+    const { result } = renderHook(() => useModelProvider())
+
+    act(() => {
+      result.current.setProviders([
+        { provider: 'llamacpp-upstream', active: true, models: [], settings: [] },
+      ] as any)
+    })
+
+    expect(result.current.providers.map((p) => p.provider)).toEqual([
+      'llamacpp-upstream',
+      'openai',
+    ])
+    expect(result.current.selectedModel).toBeNull()
+    expect(result.current.selectedProvider).toBe('')
+  })
+})
+
 describe('useModelProvider migrations', () => {
   it('migrates flash_attn setting to dropdown with default value', () => {
     const persistApi = (useModelProvider as any).persist

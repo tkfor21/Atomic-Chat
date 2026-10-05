@@ -307,6 +307,8 @@ describe('remote reasoning', () => {
       'gemini',
       'xai',
       'openrouter',
+      'aimlapi',
+      'edenai',
       'nvidia',
       'chatgpt',
     ]) {

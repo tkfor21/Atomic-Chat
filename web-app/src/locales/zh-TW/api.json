@@ -15,6 +15,7 @@
     "baseUrl": "Base URL",
     "status": "Status",
     "loadedModel": "Loaded model",
+    "decisionModel": "Decision model",
     "noModel": "None",
     "ctx": "{{count}} ctx"
   },

@@ -101,24 +101,38 @@ export function downloadStatusLabel(
 ): string {
   if (paused) return t('common:downloadPanel.paused')
   if (total > 0) return `${Math.round(progress * 100)}%`
+  return downloadStageLabel(t, stage) ?? t('common:downloadPanel.preparing')
+}
+
+/**
+ * What the downloader is doing instead of moving bytes — reconnecting after a
+ * failure, or waiting on a connection that went quiet — or null when it is
+ * simply downloading (or still connecting, which reads as "Starting…").
+ */
+export function downloadStageLabel(
+  t: (key: string, vars?: Record<string, unknown>) => string,
+  stage?: { kind: string; attempt: number; maxAttempts: number }
+): string | null {
+  if (stage?.kind === 'stalled') return t('common:downloadPanel.stalled')
   if (stage?.kind === 'retrying')
     return t('common:downloadPanel.retrying', {
       attempt: stage.attempt,
       maxAttempts: stage.maxAttempts,
     })
-  if (stage?.kind === 'connecting') return t('common:downloadPanel.preparing')
-  return t('common:downloadPanel.preparing')
+  return null
 }
 
 /**
  * A transfer's readout on one line: `42% · 4.20 / 12.40 GB · 7m 36s left`,
- * `Paused · 4.20 / 12.40 GB`, or what the downloader is doing before the
- * first byte.
+ * `Paused · 4.20 / 12.40 GB`, `42% · Stalled, reconnecting… · 4.20 / 12.40 GB`,
+ * or what the downloader is doing before the first byte.
  *
  * The parts are ordered by how much they matter, so a line that has to be
  * cut loses the estimate at its end and never the size. The speed is not one
  * of them: it is what pushed the panel's row past its width, and the estimate
- * already folds it in. The reply gate quotes a running download the same way.
+ * already folds it in. A transfer that is stalled or reconnecting has no
+ * estimate at all — the last one described a connection that is gone. The
+ * reply gate quotes a running download the same way.
  */
 export function formatDownloadReadout(
   t: (key: string, vars?: Record<string, unknown>) => string,
@@ -131,11 +145,18 @@ export function formatDownloadReadout(
     paused?: boolean
   }
 ): string {
-  const eta = download.paused
-    ? null
-    : formatEta(download.total - download.current, download.bytesPerSecond)
+  // Before the first byte the status word already is the stage.
+  const stageNote =
+    download.paused || !(download.total > 0)
+      ? null
+      : downloadStageLabel(t, download.stage)
+  const eta =
+    download.paused || stageNote
+      ? null
+      : formatEta(download.total - download.current, download.bytesPerSecond)
   return [
     downloadStatusLabel(t, download),
+    stageNote,
     download.total > 0 && formatProgressPair(download.current, download.total),
     eta && t('common:downloadPanel.left', { eta }),
   ]

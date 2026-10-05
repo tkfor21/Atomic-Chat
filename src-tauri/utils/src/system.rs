@@ -341,13 +341,13 @@ pub fn add_cuda_paths_linux(command: &mut tokio::process::Command) -> bool {
 
 /// Setup Windows-specific process creation flags
 pub fn setup_windows_process_flags(command: &mut tokio::process::Command) {
-    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
-    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    #[cfg(not(windows))]
     {
         let _ = command; // Silence unused parameter warning on non-Windows platforms
     }

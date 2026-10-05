@@ -106,6 +106,8 @@ describe('SettingsMenu', () => {
     expect(screen.getByText('common:https_proxy')).toBeInTheDocument()
     // MCP moved to the top-level Connectors page.
     expect(screen.queryByText('common:mcp-servers')).not.toBeInTheDocument()
+    // Remote & LAN moved to the API screen.
+    expect(screen.queryByText('common:remote_lan')).not.toBeInTheDocument()
   })
 
   it('shows the expansion chevron only when a provider is disabled', () => {

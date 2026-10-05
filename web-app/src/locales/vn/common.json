@@ -27,6 +27,7 @@
   "hub": "Hub",
   "models": "Mô hình",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Trợ giúp & Hỗ trợ",
   "helpUsImproveJan": "Giúp chúng tôi cải thiện Atomic Bot",
@@ -393,5 +394,12 @@
     "title": "Plugin",
     "emptySkills": "Chưa có kỹ năng nào",
     "manageSkills": "Quản lý kỹ năng"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Đã tải xuống mô hình",
+    "modelReadyBody": "{{name}} đã sẵn sàng để sử dụng.",
+    "engineReadyTitle": "Đã cài đặt engine",
+    "chatEngineReadyBody": "llama.cpp đã sẵn sàng chạy mô hình.",
+    "mediaEngineReadyBody": "Engine hình ảnh và video đã sẵn sàng."
   }
 }

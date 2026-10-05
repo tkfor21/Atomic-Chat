@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -31,25 +31,20 @@ describe('ModelPickerDownloads', () => {
     )
   })
 
-  it('renders one filled branded Hugging Face Hub action', () => {
+  it('renders the Hub action as a regular small secondary button', () => {
     const onClick = vi.fn()
     render(<HuggingFaceAction onClick={onClick} />)
 
     const action = screen.getByRole('button', {
       name: 'Download from Hugging Face',
     })
-    expect(action).toHaveClass(
-      'h-11',
-      'rounded-full',
-      'border',
-      'bg-secondary/70',
-      'hover:bg-accent',
-      'focus-visible:ring-2'
-    )
-    expect(action).not.toHaveClass('rounded-md')
-    expect(
-      within(action).getByRole('img', { name: 'Hugging Face' }).parentElement
-    ).toHaveClass('size-7')
+    expect(action).toHaveAttribute('data-slot', 'button')
+    expect(action).toHaveAttribute('data-variant', 'secondary')
+    expect(action).toHaveAttribute('data-size', 'sm')
+    expect(action).toHaveClass('h-8', 'w-full')
+    const logo = action.querySelector('img')
+    expect(logo).toHaveAttribute('aria-hidden')
+    expect(logo).toHaveClass('size-4')
     fireEvent.click(action)
     expect(onClick).toHaveBeenCalledOnce()
   })

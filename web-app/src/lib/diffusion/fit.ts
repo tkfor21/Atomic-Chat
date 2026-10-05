@@ -113,6 +113,49 @@ export function estimateDiffusionFit(
   }
 }
 
+export type AutoOffload = {
+  offload: DiffusionOffloadPolicy
+  /** Where the core moves the model if `offload` runs out of memory. */
+  offloadFallback?: DiffusionOffloadPolicy
+}
+
+/**
+ * What the "Auto" memory setting asks the core for.
+ *
+ * With a GPU of its own the model starts on it, whatever the estimate says:
+ * the estimate counts every part as resident at once and keeps a wide margin,
+ * so on a 12 GB card it offloaded models that run there in a fraction of the
+ * time. Offloading is left to the core, which takes the estimate's policy only
+ * when the GPU actually runs out — or `group` when the estimate saw no need,
+ * since it prices the family's default size and a larger image can still run
+ * out.
+ *
+ * Unified memory and CPU-only machines keep the estimate's policy: Metal has
+ * a hard ceiling that fails loudly (see `MACOS_LOAD_CEILING`), and there is no
+ * GPU to keep anything on.
+ */
+export function autoOffload(
+  fit: DiffusionFitEstimate,
+  profile: HardwareProfile | null,
+  opts: { macos: boolean; familyId: string }
+): AutoOffload {
+  if (opts.macos) {
+    // Qwen-Image's Wan VAE needs a large temporary decode buffer on Metal.
+    // Keeping the VAE on the GPU can produce a command-buffer page fault even
+    // when the static weights fit; the fault corrupts the first image and
+    // poisons the backend for every later request. Full model offload keeps
+    // the VAE on CPU while Metal still runs the denoiser.
+    return { offload: opts.familyId === 'qwen-image' ? 'model' : fit.policy }
+  }
+  if (profile?.memoryKind === 'vram') {
+    return {
+      offload: 'none',
+      offloadFallback: fit.policy === 'none' ? 'group' : fit.policy,
+    }
+  }
+  return { offload: fit.policy }
+}
+
 const textEncoderBytes = (family: DiffusionCatalogFamily): number =>
   family.text_encoders.reduce((sum, encoder) => sum + encoder.bytes, 0)
 
@@ -126,7 +169,7 @@ export function fitForQuant(
   return estimateDiffusionFit(
     {
       transformerBytes: quant.bytes,
-      vaeBytes: family.vae?.bytes ?? 0,
+      vaeBytes: (family.vae?.bytes ?? 0) + (family.audio_vae?.bytes ?? 0),
       teBytes: textEncoderBytes(family),
       teOnCpu: opts.teOnCpu,
       width: family.defaults.width,

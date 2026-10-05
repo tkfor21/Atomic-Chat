@@ -39,6 +39,7 @@
   "models": "Models",
   "modelHub": "Model Hub",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "launch": "Integrations",
   "api": "API",
@@ -729,6 +730,7 @@
     "preparing": "Starting…",
     "connecting": "Connecting…",
     "retrying": "Connection failed, retrying ({{attempt}}/{{maxAttempts}})…",
+    "stalled": "Stalled, reconnecting…",
     "paused": "Paused",
     "left": "{{eta}} left",
     "appUpdate": "App update"
@@ -759,5 +761,12 @@
       "notLoaded": "Not loaded — the first message will start it",
       "failed": "Failed to load"
     }
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Model downloaded",
+    "modelReadyBody": "{{name}} is ready to use.",
+    "engineReadyTitle": "Engine installed",
+    "chatEngineReadyBody": "llama.cpp is ready to run models.",
+    "mediaEngineReadyBody": "The image and video engine is ready."
   }
 }

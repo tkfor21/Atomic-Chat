@@ -9,11 +9,15 @@ import {
 } from '@/components/ui/tooltip'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import type { GenerateDisabledReason } from '@/hooks/useImageGeneration'
+import type { VideoGenerateDisabledReason } from '@/hooks/useVideoGeneration'
+import type { DiffusionModality } from '@/services/diffusion/types'
 
 type ImageGenerateButtonProps = {
   generating: boolean
   stopRequested: boolean
-  disabledReason: GenerateDisabledReason | null
+  disabledReason: GenerateDisabledReason | VideoGenerateDisabledReason | null
+  /** Whose reasons the tooltip reads: `images:` or `videos:form.disabled`. */
+  modality?: DiffusionModality
   /** Total images this click produces: batch × runs. */
   imageCount: number
   onGenerate: () => void
@@ -26,17 +30,21 @@ type ImageGenerateButtonProps = {
  * While generating the button becomes Stop, so the user never has to find a
  * second control. Disabled Generate carries its reason in a tooltip — the
  * wrapper is the trigger, because a disabled button fires no pointer events.
+ * While the model starts — Generate starts a stopped one itself — it says so.
  */
 export const ImageGenerateButton = memo(function ImageGenerateButton({
   generating,
   stopRequested,
   disabledReason,
+  modality = 'image',
   imageCount,
   onGenerate,
   onStop,
 }: ImageGenerateButtonProps) {
   const { t } = useTranslation()
   const disabled = generating ? stopRequested : disabledReason !== null
+  const starting = !generating && disabledReason === 'modelLoading'
+  const reasonNamespace = modality === 'video' ? 'videos' : 'images'
 
   const button = (
     <Button
@@ -54,6 +62,8 @@ export const ImageGenerateButton = memo(function ImageGenerateButton({
         ) : (
           <IconPlayerStopFilled size={16} />
         )
+      ) : starting ? (
+        <IconLoader2 size={16} className="animate-spin" />
       ) : (
         <IconSparkles size={16} />
       )}
@@ -61,9 +71,11 @@ export const ImageGenerateButton = memo(function ImageGenerateButton({
         ? stopRequested
           ? t('images:form.stopping')
           : t('images:form.stop')
-        : imageCount > 1
-          ? t('images:form.generateCount', { count: imageCount })
-          : t('images:form.generate')}
+        : starting
+          ? t('images:form.starting')
+          : imageCount > 1
+            ? t('images:form.generateCount', { count: imageCount })
+            : t('images:form.generate')}
     </Button>
   )
 
@@ -73,9 +85,9 @@ export const ImageGenerateButton = memo(function ImageGenerateButton({
         <TooltipTrigger asChild>
           <span className="block h-full w-full">{button}</span>
         </TooltipTrigger>
-        {!generating && disabledReason && (
+        {!generating && disabledReason && !starting && (
           <TooltipContent>
-            <p>{t(`images:form.disabled.${disabledReason}`)}</p>
+            <p>{t(`${reasonNamespace}:form.disabled.${disabledReason}`)}</p>
           </TooltipContent>
         )}
       </Tooltip>

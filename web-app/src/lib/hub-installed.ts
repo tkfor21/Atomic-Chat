@@ -150,6 +150,26 @@ function synthesizeEntry(id: string, installed: InstalledModel): CatalogModel {
 }
 
 /**
+ * The entries the installed list may enrich from: the curated catalog plus the
+ * staff picks it does not index. A pick whose publisher the catalog does not
+ * scrape (`owao/…`) is resolved from Hugging Face alone, and without it here
+ * the very file onboarding downloaded lists as a bare row named after the file
+ * — no README, no context length, a parameter count guessed from the name.
+ */
+export function withStaffPicks(
+  catalog: readonly CatalogModel[],
+  picks: readonly CatalogModel[]
+): CatalogModel[] {
+  const indexed = new Set(
+    catalog.map((entry) => entry.model_name.toLowerCase())
+  )
+  return [
+    ...catalog,
+    ...picks.filter((pick) => !indexed.has(pick.model_name.toLowerCase())),
+  ]
+}
+
+/**
  * Every model installed locally, as Hub rows: the catalog entry when one claims
  * the installed id (so its quant list, README and stats stay available), a
  * synthesized entry otherwise.

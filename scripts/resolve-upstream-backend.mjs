@@ -54,7 +54,7 @@ const LINUX_ASSET_INFIX = {
   'linux-vulkan-x64': 'ubuntu-vulkan-x64',
 }
 
-const WIN_CUDA_FAMILY_RE = /^win-cuda-(\d+)-x64$/
+const WIN_CUDA_FAMILY_RE = /^win-cuda-(\d+)-(x64|arm64)$/
 
 function parseArgs(argv) {
   const out = {}
@@ -79,16 +79,17 @@ export function assetNameFor(tag, backend) {
 }
 
 /**
- * Resolves a minor-less Windows CUDA family id (`win-cuda-13-x64`) to the
- * highest concrete minor the manifest lists (`win-cuda-13.3-x64`). Upstream
- * moves the minor between releases, so it cannot be hardcoded (ATO-174).
+ * Resolves a minor-less Windows CUDA family id (`win-cuda-13-x64`,
+ * `win-cuda-13-arm64`) to the highest concrete minor the manifest lists for
+ * that arch (`win-cuda-13.3-x64`). Upstream moves the minor between releases,
+ * so it cannot be hardcoded (ATO-174).
  */
 export function resolveCudaFamily(backend, tag, assetNames) {
   const family = WIN_CUDA_FAMILY_RE.exec(backend)
   if (!family) return backend
-  const major = family[1]
+  const [, major, arch] = family
   const re = new RegExp(
-    `^llama-${tag}-bin-win-cuda-${major}\\.(\\d+)-x64\\.zip$`
+    `^llama-${tag}-bin-win-cuda-${major}\\.(\\d+)-${arch}\\.zip$`
   )
   let best = null
   for (const name of assetNames) {
@@ -98,7 +99,7 @@ export function resolveCudaFamily(backend, tag, assetNames) {
     if (best === null || minor > best) best = minor
   }
   if (best === null) return null
-  return `win-cuda-${major}.${best}-x64`
+  return `win-cuda-${major}.${best}-${arch}`
 }
 
 /**

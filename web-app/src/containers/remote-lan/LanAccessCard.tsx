@@ -22,7 +22,7 @@ export function LanAccessCard({ lan }: { lan: LanAccessView }) {
   ].filter((note): note is string => Boolean(note))
 
   return (
-    <section aria-label={t('settings:remoteLan.lan.title')}>
+    <section className="flex" aria-label={t('settings:remoteLan.lan.title')}>
       <Card
         header={
           <AccessCardHeader

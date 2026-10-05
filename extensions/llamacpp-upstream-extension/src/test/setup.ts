@@ -45,6 +45,14 @@ vi.mock('@tauri-apps/api/core', () => ({
   Channel: vi.fn(),
 }))
 
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(vi.fn()) }))
+
+// The app version travels with every catalog / recommendation / updates call to the core. The
+// implementation is passed to `vi.fn` so `restoreAllMocks` in a suite's `afterEach` keeps it.
+vi.mock('@tauri-apps/api/app', () => ({
+  getVersion: vi.fn(async () => '1.0.0'),
+}))
+
 vi.mock('@tauri-apps/plugin-log', () => ({
   info: vi.fn().mockResolvedValue(undefined),
   warn: vi.fn().mockResolvedValue(undefined),

@@ -2,6 +2,7 @@ use super::disk::{
     disk_err_to_string, ensure_free_space, ensure_path_within_limit, remaining_bytes,
 };
 use super::models::{DownloadEvent, DownloadItem, DownloadStage, ProgressTracker, ProxyConfig};
+use super::segmented;
 use crate::core::app::commands::get_jan_data_folder_path;
 use futures_util::StreamExt;
 use jan_utils::{canonicalize_existing_prefix, normalize_path};
@@ -36,10 +37,114 @@ pub fn sidecar_path(save_path: &Path, ext: &str) -> PathBuf {
     save_path.with_extension(appended)
 }
 
-const MAX_STREAM_RETRIES: u32 = 5;
+pub(super) const MAX_STREAM_RETRIES: u32 = 5;
 #[cfg(not(test))]
 const RETRY_BASE_DELAY_MS: u64 = 1_000;
-const RETRY_RESET_PROGRESS_BYTES: u64 = 1024 * 1024;
+pub(super) const RETRY_RESET_PROGRESS_BYTES: u64 = 1024 * 1024;
+
+/// Timing and sizing of a transfer, in one place so tests can shrink them.
+///
+/// Field feedback, 2026-09-29: "2 GB shows an hour, then no progress, only a
+/// restart helps". Two causes, both measured: the body stream had no read
+/// timeout, so a silently dead connection (Wi-Fi switch, sleep, VPN
+/// reconnect) waited forever with the retry ladder never firing; and every
+/// file came over one connection, which Hugging Face's CDN caps well below
+/// the link (1.2–2.1 MB/s on one stream against 5.6 MB/s on eight, same
+/// machine, same file).
+#[derive(Clone, Debug)]
+pub(super) struct TransferTuning {
+    /// No byte on an open body for this long: the connection is dead. It is
+    /// dropped and reopened from the durable offset with a Range request.
+    pub idle_timeout: Duration,
+    /// No byte for this long: tell the panel the transfer is stalled, well
+    /// before the reconnect, so it stops quoting a speed that is not there.
+    pub stall_notice: Duration,
+    /// Response headers must arrive this soon after a request is sent. The
+    /// connect timeout does not cover a server that accepts and then says
+    /// nothing.
+    pub response_timeout: Duration,
+    /// Least time between two progress events of one task.
+    pub progress_interval: Duration,
+    /// Files at least this large, from a server that honours ranges, are
+    /// fetched over several connections at once.
+    pub segmented_min_size: u64,
+    /// Neither half of a split segment is ever smaller than this.
+    pub min_segment_size: u64,
+    /// Connections per file.
+    pub max_connections: usize,
+    /// How often the segment map of a multi-connection download is saved.
+    pub persist_interval: Duration,
+}
+
+impl Default for TransferTuning {
+    fn default() -> Self {
+        Self {
+            idle_timeout: Duration::from_secs(30),
+            stall_notice: Duration::from_secs(10),
+            response_timeout: Duration::from_secs(30),
+            progress_interval: Duration::from_millis(500),
+            segmented_min_size: 64 * 1024 * 1024,
+            min_segment_size: 16 * 1024 * 1024,
+            max_connections: 8,
+            persist_interval: Duration::from_secs(1),
+        }
+    }
+}
+
+/// What the next read of a response body produced.
+pub(super) enum NextChunk {
+    Chunk(hyper::body::Bytes),
+    End,
+    /// A transport error, or no byte within `idle_timeout`.
+    Failed(String),
+    Cancelled,
+}
+
+/// Read the next chunk of a body, giving up on a connection that has gone
+/// quiet. `on_stall` runs once when nothing has arrived for `stall_notice`.
+pub(super) async fn next_chunk_with_watchdog<S>(
+    stream: &mut S,
+    cancel_token: &CancellationToken,
+    tuning: &TransferTuning,
+    mut on_stall: impl FnMut(),
+) -> NextChunk
+where
+    S: futures_util::Stream<Item = reqwest::Result<hyper::body::Bytes>> + Unpin,
+{
+    let started = tokio::time::Instant::now();
+    let mut noticed = false;
+    loop {
+        let deadline = if noticed || tuning.stall_notice >= tuning.idle_timeout {
+            started + tuning.idle_timeout
+        } else {
+            started + tuning.stall_notice
+        };
+        // `biased`: on a slow link the next chunk is seconds away, and a
+        // cancelled download must not keep its file open that long.
+        let next = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return NextChunk::Cancelled,
+            next = tokio::time::timeout_at(deadline, stream.next()) => next,
+        };
+        match next {
+            Ok(Some(Ok(chunk))) => return NextChunk::Chunk(chunk),
+            Ok(Some(Err(error))) => return NextChunk::Failed(error.to_string()),
+            Ok(None) => return NextChunk::End,
+            Err(_) if started.elapsed() >= tuning.idle_timeout => {
+                // "timed out" is what the web's failure classifier reads as
+                // a network fault, which a dead connection is.
+                return NextChunk::Failed(format!(
+                    "read timed out: no data received for {}s",
+                    tuning.idle_timeout.as_secs_f32()
+                ));
+            }
+            Err(_) => {
+                noticed = true;
+                on_stall();
+            }
+        }
+    }
+}
 
 /// Relays `DownloadStage` updates to the task's progress channel.
 ///
@@ -79,7 +184,7 @@ impl StageReporter {
         }
     }
 
-    fn report(&self, kind: &'static str, attempt: u32) {
+    pub(super) fn report(&self, kind: &'static str, attempt: u32) {
         (self.emit)(DownloadStage {
             kind,
             attempt,
@@ -89,7 +194,7 @@ impl StageReporter {
 }
 
 #[derive(Debug)]
-enum DownloadRequestError {
+pub(super) enum DownloadRequestError {
     Retryable(String),
     RestartRequired(String),
     Fatal(String),
@@ -105,7 +210,7 @@ impl std::fmt::Display for DownloadRequestError {
     }
 }
 
-fn retry_delay(retry_count: u32) -> Duration {
+pub(super) fn retry_delay(retry_count: u32) -> Duration {
     #[cfg(test)]
     {
         let _ = retry_count;
@@ -117,7 +222,10 @@ fn retry_delay(retry_count: u32) -> Duration {
     }
 }
 
-async fn wait_for_retry(delay: Duration, cancel_token: &CancellationToken) -> Result<(), String> {
+pub(super) async fn wait_for_retry(
+    delay: Duration,
+    cancel_token: &CancellationToken,
+) -> Result<(), String> {
     tokio::select! {
         _ = tokio::time::sleep(delay) => Ok(()),
         _ = cancel_token.cancelled() => Err("Download cancelled".to_string()),
@@ -160,7 +268,7 @@ async fn lock_path_for_writing(
     }
 }
 
-fn expected_download_size(item: &DownloadItem, response_size: u64) -> u64 {
+pub(super) fn expected_download_size(item: &DownloadItem, response_size: u64) -> u64 {
     item.size.filter(|size| *size > 0).unwrap_or(response_size)
 }
 
@@ -454,6 +562,18 @@ pub fn _get_client_for_item(
     item: &DownloadItem,
     header_map: &HeaderMap,
 ) -> Result<reqwest::Client, String> {
+    build_client_for_item(item, header_map, false)
+}
+
+/// The client for one download item. `http1_only` is for the segments of a
+/// multi-connection download: HTTP/2 would multiplex them over one TCP
+/// connection, and the per-connection cap is exactly what they are there to
+/// get around.
+pub(super) fn build_client_for_item(
+    item: &DownloadItem,
+    header_map: &HeaderMap,
+    http1_only: bool,
+) -> Result<reqwest::Client, String> {
     let mut client_builder = reqwest::Client::builder()
         // ATO-233: a missing or renamed ggml-org release asset can leave the
         // HEAD request in helpers.rs hanging indefinitely (the CDN accepts the
@@ -462,7 +582,14 @@ pub fn _get_client_for_item(
         // instead of blocking model load forever.
         .connect_timeout(Duration::from_secs(30))
         .http2_keep_alive_timeout(Duration::from_secs(15))
+        // Lets the OS notice a peer that vanished without a FIN (a NAT that
+        // dropped the mapping, a laptop that slept); the body watchdog in
+        // `next_chunk_with_watchdog` is what bounds the wait in practice.
+        .tcp_keepalive(Duration::from_secs(30))
         .default_headers(header_map.clone());
+    if http1_only {
+        client_builder = client_builder.http1_only();
+    }
 
     // Add proxy configuration if provided
     if let Some(proxy_config) = &item.proxy {
@@ -611,12 +738,13 @@ pub(super) async fn preflight_file_size(
 // ===== MAIN DOWNLOAD FUNCTIONS =====
 
 // Context passed to `download_single_file` to reduce the number of arguments
-struct DownloadCtx {
-    header_map: HeaderMap,
-    resume: bool,
-    cancel_token: CancellationToken,
-    evt_name: String,
-    progress_tracker: ProgressTracker,
+pub(super) struct DownloadCtx {
+    pub header_map: HeaderMap,
+    pub resume: bool,
+    pub cancel_token: CancellationToken,
+    pub evt_name: String,
+    pub progress_tracker: ProgressTracker,
+    pub tuning: TransferTuning,
 }
 
 /// Downloads multiple files in parallel with individual progress tracking
@@ -659,17 +787,17 @@ pub async fn _download_files_internal(
     // the download, and the save path overflows the Windows limit. Checking
     // them here turns a write error at 80% of a 20 GB transfer into an upfront
     // message that names the actual problem.
-    let mut partial_paths = Vec::new();
+    let mut already_downloaded = Vec::new();
     for item in items.iter() {
         let save_path = normalize_path(&jan_data_folder.join(&item.save_path));
         ensure_path_within_limit(&save_path)?;
         if resume {
-            partial_paths.push(sidecar_path(&save_path, "tmp"));
+            already_downloaded.push(segmented::downloaded_bytes_on_disk(&save_path));
         }
     }
     ensure_free_space(
         &jan_data_folder,
-        remaining_bytes(total_size, &partial_paths),
+        remaining_bytes(total_size, &already_downloaded),
     )?;
 
     // Collect download tasks for parallel execution
@@ -706,6 +834,7 @@ pub async fn _download_files_internal(
             cancel_token: cancel_token.clone(),
             evt_name: evt_name.clone(),
             progress_tracker: progress_tracker.clone(),
+            tuning: TransferTuning::default(),
         };
 
         let task = tokio::spawn(async move {
@@ -828,6 +957,7 @@ async fn download_single_file(
         cancel_token,
         evt_name,
         progress_tracker,
+        tuning,
     } = ctx;
     let keep_partial_on_cancel = true;
     // Before anything reads the partial's state: a predecessor that is still
@@ -868,6 +998,35 @@ async fn download_single_file(
     let mut download_delta = 0u64;
     let mut initial_progress = 0u64;
 
+    if segmented::eligible(expected_size, &tuning) {
+        let outcome = segmented::download(segmented::FileJob {
+            app: &app,
+            item,
+            save_path,
+            file_id: &file_id,
+            size: expected_size,
+            resume: should_resume,
+            header_map: &header_map,
+            cancel_token: &cancel_token,
+            evt_name: &evt_name,
+            progress_tracker: &progress_tracker,
+            tuning: &tuning,
+            stage: &stage_reporter,
+        })
+        .await?;
+        match outcome {
+            segmented::SegmentedOutcome::Done => return Ok(save_path.to_path_buf()),
+            segmented::SegmentedOutcome::Declined(reason) => {
+                log::info!(
+                    "Downloading '{}' over one connection from byte 0: {reason}",
+                    item.url
+                );
+                should_resume = false;
+            }
+            segmented::SegmentedOutcome::SingleStream => {}
+        }
+    }
+
     let (resp, _actual_url) = if should_resume {
         let downloaded_size = tmp_save_path
             .metadata()
@@ -896,7 +1055,9 @@ async fn download_single_file(
                 &client,
                 &item.url,
                 0,
+                None,
                 expected_size,
+                tuning.response_timeout,
                 &cancel_token,
                 Some(&stage_reporter),
             )
@@ -908,7 +1069,9 @@ async fn download_single_file(
                 &client,
                 &item.url,
                 downloaded_size,
+                None,
                 expected_size,
+                tuning.response_timeout,
                 &cancel_token,
                 Some(&stage_reporter),
             )
@@ -945,7 +1108,9 @@ async fn download_single_file(
                         &client,
                         &item.url,
                         0,
+                        None,
                         expected_size,
+                        tuning.response_timeout,
                         &cancel_token,
                         Some(&stage_reporter),
                     )
@@ -962,7 +1127,9 @@ async fn download_single_file(
             &client,
             &item.url,
             0,
+            None,
             expected_size,
+            tuning.response_timeout,
             &cancel_token,
             Some(&stage_reporter),
         )
@@ -998,28 +1165,31 @@ async fn download_single_file(
     let mut total_transferred = initial_progress;
     let mut retry_count = 0u32;
     let mut progress_since_retry_reset = 0u64;
+    let mut progress_clock = std::time::Instant::now();
 
     // write chunk to file
     loop {
         // Raced with the token: on a slow link the next chunk is seconds away,
-        // and until it arrived a cancelled download kept the file open.
-        let next = tokio::select! {
-            biased;
-            _ = cancel_token.cancelled() => {
+        // and until it arrived a cancelled download kept the file open. Raced
+        // with a watchdog too: a connection that died without a FIN never
+        // yields another chunk or an error, and waited here forever.
+        let next = next_chunk_with_watchdog(&mut stream, &cancel_token, &tuning, || {
+            stage_reporter.report(DownloadStage::STALLED, 0)
+        })
+        .await;
+        let stream_error = match next {
+            NextChunk::Cancelled => {
                 // Lands the buffered tail and any write still in flight, so the
                 // partial's length is final before the path lock is released.
                 let _ = writer.flush().await;
                 log::info!("Download cancelled: {}", item.url);
                 return Err("Download cancelled".to_string());
             }
-            next = stream.next() => next,
-        };
-        let stream_error = match next {
-            None if expected_size > 0 && total_transferred < expected_size => Some(format!(
-                "stream ended after {total_transferred} of {expected_size} bytes"
-            )),
-            None => break,
-            Some(Ok(chunk)) => {
+            NextChunk::End if expected_size > 0 && total_transferred < expected_size => Some(
+                format!("stream ended after {total_transferred} of {expected_size} bytes"),
+            ),
+            NextChunk::End => break,
+            NextChunk::Chunk(chunk) => {
                 if cancel_token.is_cancelled() {
                     if !keep_partial_on_cancel && !should_resume {
                         tokio::fs::remove_dir_all(&save_path.parent().unwrap())
@@ -1042,28 +1212,27 @@ async fn download_single_file(
                     progress_since_retry_reset = 0;
                 }
 
-                // Update progress every 10 MB
-                if download_delta >= 10 * 1024 * 1024 {
-                    // Update individual file progress
+                if download_delta > 0 && progress_clock.elapsed() >= tuning.progress_interval {
                     progress_tracker
                         .update_progress(&file_id, total_transferred)
                         .await;
-
-                    // Emit combined progress event
-                    let (combined_transferred, combined_total) =
-                        progress_tracker.get_total_progress().await;
-                    let evt = DownloadEvent {
-                        transferred: combined_transferred,
-                        total: combined_total,
-                        stage: None,
-                    };
-                    app.emit(&evt_name, evt).unwrap();
-
+                    progress_clock = std::time::Instant::now();
                     download_delta = 0u64;
+
+                    if progress_tracker.claim_emit(tuning.progress_interval) {
+                        let (combined_transferred, combined_total) =
+                            progress_tracker.get_total_progress().await;
+                        let evt = DownloadEvent {
+                            transferred: combined_transferred,
+                            total: combined_total,
+                            stage: None,
+                        };
+                        app.emit(&evt_name, evt).unwrap();
+                    }
                 }
                 None
             }
-            Some(Err(error)) => Some(error.to_string()),
+            NextChunk::Failed(error) => Some(error),
         };
 
         if let Some(stream_error) = stream_error {
@@ -1108,18 +1277,36 @@ async fn download_single_file(
                     MAX_STREAM_RETRIES,
                     delay.as_millis()
                 );
+                // The reconnect ladder used to run silently; the row said
+                // "stalled" at best while it waited through the backoff.
+                stage_reporter.report(DownloadStage::RETRYING, retry_count + 1);
                 wait_for_retry(delay, &cancel_token).await?;
                 retry_count += 1;
 
-                match request_download_response(&client, &item.url, durable_offset, expected_size)
-                    .await
+                match request_download_response(
+                    &client,
+                    &item.url,
+                    durable_offset,
+                    None,
+                    expected_size,
+                    tuning.response_timeout,
+                )
+                .await
                 {
                     Ok(response) => {
                         stream = response.bytes_stream();
                         break;
                     }
                     Err(DownloadRequestError::RestartRequired(range_error)) => {
-                        match request_download_response(&client, &item.url, 0, expected_size).await
+                        match request_download_response(
+                            &client,
+                            &item.url,
+                            0,
+                            None,
+                            expected_size,
+                            tuning.response_timeout,
+                        )
+                        .await
                         {
                             Ok(response) => {
                                 let new_file = File::create(&tmp_save_path)
@@ -1241,6 +1428,28 @@ pub(super) async fn download_single_file_with_token_for_test(
     resume: bool,
     cancel_token: CancellationToken,
 ) -> Result<std::path::PathBuf, String> {
+    download_single_file_with_tuning_for_test(
+        app,
+        item,
+        save_path,
+        expected_size,
+        resume,
+        cancel_token,
+        TransferTuning::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn download_single_file_with_tuning_for_test(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    item: &DownloadItem,
+    save_path: &Path,
+    expected_size: u64,
+    resume: bool,
+    cancel_token: CancellationToken,
+    tuning: TransferTuning,
+) -> Result<std::path::PathBuf, String> {
     let file_id = "test-download".to_string();
     let mut sizes = HashMap::new();
     sizes.insert(file_id.clone(), expected_size);
@@ -1250,6 +1459,7 @@ pub(super) async fn download_single_file_with_token_for_test(
         cancel_token,
         evt_name: "test-download-progress".to_string(),
         progress_tracker: ProgressTracker::new(std::slice::from_ref(item), sizes),
+        tuning,
     };
     download_single_file(app, item, save_path, file_id, expected_size, ctx).await
 }
@@ -1272,26 +1482,51 @@ pub async fn _get_maybe_resume_with_fallback(
     start_bytes: u64,
 ) -> Result<(reqwest::Response, String), String> {
     log::info!("Downloading from original URL: {}", url);
-    let resp = request_download_response(client, url, start_bytes, 0)
-        .await
-        .map_err(|error| error.to_string())?;
+    let resp = request_download_response(
+        client,
+        url,
+        start_bytes,
+        None,
+        0,
+        TransferTuning::default().response_timeout,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok((resp, url.to_string()))
 }
 
-/// Internal function to attempt download from a single URL
-async fn request_download_response(
+/// Send a request and wait for its response headers, at most `timeout`.
+async fn send_with_timeout(
+    request: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Response, DownloadRequestError> {
+    match tokio::time::timeout(timeout, request.send()).await {
+        Ok(result) => result.map_err(|error| DownloadRequestError::Retryable(error.to_string())),
+        Err(_) => Err(DownloadRequestError::Retryable(format!(
+            "request timed out: no response within {}s",
+            timeout.as_secs_f32()
+        ))),
+    }
+}
+
+/// Request `url` from `start_bytes`, up to and including `end_inclusive` when
+/// given. Anything but a plain GET from byte 0 is a Range request and must be
+/// answered with a matching 206.
+pub(super) async fn request_download_response(
     client: &reqwest::Client,
     url: &str,
     start_bytes: u64,
+    end_inclusive: Option<u64>,
     expected_size: u64,
+    response_timeout: Duration,
 ) -> Result<reqwest::Response, DownloadRequestError> {
-    if start_bytes > 0 {
-        let resp = client
-            .get(url)
-            .header(RANGE, format!("bytes={start_bytes}-"))
-            .send()
-            .await
-            .map_err(|error| DownloadRequestError::Retryable(error.to_string()))?;
+    if start_bytes > 0 || end_inclusive.is_some() {
+        let range = match end_inclusive {
+            Some(end) => format!("bytes={start_bytes}-{end}"),
+            None => format!("bytes={start_bytes}-"),
+        };
+        let resp =
+            send_with_timeout(client.get(url).header(RANGE, range), response_timeout).await?;
         match resp.status() {
             reqwest::StatusCode::PARTIAL_CONTENT => {
                 validate_content_range(&resp, start_bytes, expected_size)?;
@@ -1314,17 +1549,20 @@ async fn request_download_response(
             }
             status => {
                 let body = resp.text().await.unwrap_or_default();
+                // A multi-connection download asks for ranges from byte 0 too;
+                // only a request past it resumes anything.
+                let action = if start_bytes > 0 {
+                    "Failed to resume download"
+                } else {
+                    "Failed to download"
+                };
                 Err(DownloadRequestError::Fatal(format!(
-                    "Failed to resume download: HTTP status {status}, {body}"
+                    "{action}: HTTP status {status}, {body}"
                 )))
             }
         }
     } else {
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| DownloadRequestError::Retryable(error.to_string()))?;
+        let resp = send_with_timeout(client.get(url), response_timeout).await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -1341,11 +1579,14 @@ async fn request_download_response(
     }
 }
 
-async fn request_download_response_with_retry(
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn request_download_response_with_retry(
     client: &reqwest::Client,
     url: &str,
     start_bytes: u64,
+    end_inclusive: Option<u64>,
     expected_size: u64,
+    response_timeout: Duration,
     cancel_token: &CancellationToken,
     stage: Option<&StageReporter>,
 ) -> Result<reqwest::Response, DownloadRequestError> {
@@ -1356,7 +1597,14 @@ async fn request_download_response_with_retry(
             _ = cancel_token.cancelled() => {
                 return Err(DownloadRequestError::Fatal("Download cancelled".to_string()));
             }
-            response = request_download_response(client, url, start_bytes, expected_size) => response,
+            response = request_download_response(
+                client,
+                url,
+                start_bytes,
+                end_inclusive,
+                expected_size,
+                response_timeout,
+            ) => response,
         };
         match response {
             Ok(response) => return Ok(response),
@@ -1393,7 +1641,14 @@ pub async fn _get_maybe_resume(
     url: &str,
     start_bytes: u64,
 ) -> Result<reqwest::Response, String> {
-    request_download_response(client, url, start_bytes, 0)
-        .await
-        .map_err(|error| error.to_string())
+    request_download_response(
+        client,
+        url,
+        start_bytes,
+        None,
+        0,
+        TransferTuning::default().response_timeout,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }

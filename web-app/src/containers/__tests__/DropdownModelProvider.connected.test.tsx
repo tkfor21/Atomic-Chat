@@ -43,6 +43,7 @@ vi.mock('@/lib/platform/const', () => ({
     WEB_AUTO_MODEL_SELECTION: false,
     MODEL_PROVIDER_SETTINGS: true,
     projects: true,
+    turboquantEngine: true,
   },
 }))
 

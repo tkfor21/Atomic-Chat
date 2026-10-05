@@ -27,6 +27,7 @@
   "hub": "中心",
   "models": "模型",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "帮助与支持",
   "helpUsImproveJan": "帮助我们改进 Atomic Bot",
@@ -393,5 +394,12 @@
     "title": "插件",
     "emptySkills": "暂无技能",
     "manageSkills": "管理技能"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "模型已下载",
+    "modelReadyBody": "{{name}} 已可使用。",
+    "engineReadyTitle": "引擎已安装",
+    "chatEngineReadyBody": "llama.cpp 已可运行模型。",
+    "mediaEngineReadyBody": "图像和视频引擎已就绪。"
   }
 }

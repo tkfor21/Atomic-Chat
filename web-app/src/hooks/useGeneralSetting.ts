@@ -52,9 +52,6 @@ type GeneralSettingState = {
   // Same pattern for the Connectors nav item.
   connectorsBadgeSeen: boolean
   markConnectorsBadgeSeen: () => void
-  // Same pattern for the Remote & LAN item in the settings menu.
-  remoteLanBadgeSeen: boolean
-  markRemoteLanBadgeSeen: () => void
   /**
    * Global opt-in for the agent engine. Off = every turn runs on the chat
    * pipeline. Toggled from the composer "+" menu; while on, an "Agent" chip
@@ -99,11 +96,6 @@ export const useGeneralSetting = create<GeneralSettingState>()(
       markConnectorsBadgeSeen: () =>
         set((state) =>
           state.connectorsBadgeSeen ? state : { connectorsBadgeSeen: true }
-        ),
-      remoteLanBadgeSeen: false,
-      markRemoteLanBadgeSeen: () =>
-        set((state) =>
-          state.remoteLanBadgeSeen ? state : { remoteLanBadgeSeen: true }
         ),
       agentModeEnabled: false,
       setAgentModeEnabled: (value) => set({ agentModeEnabled: value }),

@@ -3,8 +3,11 @@ import { create } from "zustand";
 import type { Chat, UIMessage } from "@ai-sdk/react";
 import type { ChatStatus } from "ai";
 import { CustomChatTransport } from "@/lib/custom-chat-transport";
-import { notifyThreadCompleted } from "@/lib/notifications";
-import { useThreadNotifications } from "@/hooks/useThreadNotifications";
+import {
+  desktopNotificationsEnabled,
+  isWindowAway,
+  showDesktopNotification,
+} from "@/lib/notifications";
 import { useThreadReadStatus } from "@/stores/thread-read-store";
 import i18n from "@/i18n/setup";
 
@@ -171,26 +174,11 @@ export const useChatSessions = create<ChatSessionState>((set, get) => ({
       if (justFinished) {
         const hasMessages = existing.chat.messages.length > 0;
         const hasPendingTools = existing.data.tools.length > 0;
-        const hasDocument = typeof document !== "undefined";
-        const isVisible = hasDocument
-          ? document.visibilityState === "visible"
-          : true;
-        // On macOS a background Tauri window stays "visible"; use hasFocus()
-        // to detect the user switching to another app.
-        const hasFocus = hasDocument
-          ? typeof document.hasFocus === "function"
-            ? document.hasFocus()
-            : true
-          : true;
         const notFocusedHere =
-          !isVisible || !hasFocus || state.activeConversationId !== sessionId;
-        // Treat undefined (pre-feature or lost during rehydration) as ON, so
-        // the master switch only suppresses notifications when explicitly OFF.
-        const globallyEnabled =
-          useThreadNotifications.getState().globallyEnabled !== false;
+          isWindowAway() || state.activeConversationId !== sessionId;
 
         if (
-          globallyEnabled &&
+          desktopNotificationsEnabled() &&
           hasMessages &&
           !hasPendingTools &&
           notFocusedHere
@@ -203,7 +191,7 @@ export const useChatSessions = create<ChatSessionState>((set, get) => ({
             "settings:threadNotifications.notificationBody",
             { title: threadTitle }
           );
-          void notifyThreadCompleted(notificationTitle, notificationBody);
+          void showDesktopNotification(notificationTitle, notificationBody);
         }
 
         if (

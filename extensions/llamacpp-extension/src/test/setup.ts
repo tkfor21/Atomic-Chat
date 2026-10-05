@@ -33,12 +33,18 @@ Object.defineProperty(globalThis, 'window', {
 
 vi.mock('../hardware', () => ({
   getSystemInfo: vi.fn(),
+  getPluginSystemInfo: vi.fn(),
   getSystemUsage: vi.fn(),
 }))
 
 // Mock Tauri invoke function
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
+}))
+
+// The app version every advisor question carries to the core.
+vi.mock('@tauri-apps/api/app', () => ({
+  getVersion: vi.fn(async () => '1.0.0'),
 }))
 
 // Mock Tauri path API

@@ -1,14 +1,61 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { TauriHardwareService } from '../hardware/tauri'
-import { HardwareData, SystemUsage } from '@/hooks/useHardware'
+import type { SystemUsage } from '@/hooks/useHardware'
 import type { InvokeArgs } from '@tauri-apps/api/core'
 import { mockIPC } from '@tauri-apps/api/mocks'
 
+// Desktop by default; the mobile test flips it. Hardware facts come from the
+// core, which mobile does not run, so the service answers null there.
+const platform = vi.hoisted(() => ({ HARDWARE_MONITORING: true }))
+vi.mock('@/lib/platform/const', async () => {
+  const { PlatformFeature } = await import('@/lib/platform/types')
+  return {
+    PlatformFeatures: new Proxy({} as Record<string, boolean>, {
+      get: (_target, key) =>
+        key === PlatformFeature.HARDWARE_MONITORING
+          ? platform.HARDWARE_MONITORING
+          : false,
+    }),
+  }
+})
+
+const { TauriHardwareService } = await import('../hardware/tauri')
+
+/** The core's `SystemInfo`: what `GET /hardware/info` wraps in `info`. */
+const coreInfo = {
+  cpu: {
+    arch: 'x86_64',
+    core_count: 8,
+    extensions: ['SSE', 'AVX'],
+    extensions_known: true,
+    name: 'Intel Core i7',
+  },
+  gpus: [
+    {
+      name: 'NVIDIA RTX 3080',
+      total_memory: 10240,
+      vendor: 'NVIDIA',
+      uuid: 'GPU-uuid-1',
+      driver_version: '472.12',
+      nvidia_info: { index: 0, compute_capability: '8.6' },
+      vulkan_info: {
+        index: 0,
+        device_id: 123,
+        device_type: 'DiscreteGpu',
+        api_version: '1.2.0',
+      },
+    },
+  ],
+  os_type: 'windows',
+  os_name: 'Windows 11',
+  total_memory: 16384,
+}
+
 describe('TauriHardwareService', () => {
-  let hardwareService: TauriHardwareService
+  let hardwareService: InstanceType<typeof TauriHardwareService>
   let ipcHandler: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    platform.HARDWARE_MONITORING = true
     ipcHandler = vi.fn()
     mockIPC((command: string, args?: InvokeArgs) => ipcHandler(command, args))
     hardwareService = new TauriHardwareService()
@@ -16,90 +63,78 @@ describe('TauriHardwareService', () => {
   })
 
   describe('getHardwareInfo', () => {
-    it('should call invoke with correct command and return hardware data', async () => {
-      const mockHardwareData: HardwareData = {
-        cpu: {
-          arch: 'x86_64',
-          core_count: 8,
-          extensions: ['SSE', 'AVX'],
-          name: 'Intel Core i7',
-          usage: 0,
-        },
-        gpus: [
-          {
-            name: 'NVIDIA RTX 3080',
-            total_memory: 10240,
-            vendor: 'NVIDIA',
-            uuid: 'gpu-uuid-1',
-            driver_version: '472.12',
-            activated: false,
-            nvidia_info: {
-              index: 0,
-              compute_capability: '8.6',
-            },
-            vulkan_info: {
-              index: 0,
-              device_id: 123,
-              device_type: 'DiscreteGpu',
-              api_version: '1.2.0',
-            },
-          },
-        ],
-        os_type: 'Windows',
-        os_name: 'Windows 11',
-        total_memory: 16384,
-      }
-
-      ipcHandler.mockResolvedValue(mockHardwareData)
+    it('reads the facts from the core and keeps their source and probe time', async () => {
+      ipcHandler.mockResolvedValue({
+        info: coreInfo,
+        source: 'probe',
+        probed_at: 1_760_000_000_000,
+        warnings: [],
+      })
 
       const result = await hardwareService.getHardwareInfo()
 
-      expect(ipcHandler).toHaveBeenCalledWith(
-        'plugin:hardware|get_system_info',
-        {}
-      )
-      expect(result).toEqual(mockHardwareData)
+      expect(ipcHandler).toHaveBeenCalledTimes(1)
+      expect(ipcHandler).toHaveBeenCalledWith('atomic_core_call', {
+        method: 'GET',
+        path: '/hardware/info',
+        body: null,
+      })
+      expect(result).toEqual({
+        ...coreInfo,
+        source: 'probe',
+        probed_at: 1_760_000_000_000,
+      })
+      // The plugin's shape survives, plus the two fields the plugin never had.
+      expect(result?.cpu.extensions_known).toBe(true)
+      expect(result?.gpus[0].uuid).toBe('GPU-uuid-1')
+      expect(result).not.toHaveProperty('warnings')
     })
 
-    it('should handle invoke rejection', async () => {
-      const mockError = new Error('Failed to get hardware info')
-      ipcHandler.mockRejectedValue(mockError)
-
-      await expect(hardwareService.getHardwareInfo()).rejects.toThrow(
-        'Failed to get hardware info'
-      )
-      expect(ipcHandler).toHaveBeenCalledWith(
-        'plugin:hardware|get_system_info',
-        {}
-      )
-    })
-
-    it('should return correct type from invoke', async () => {
-      const mockHardwareData: HardwareData = {
-        cpu: {
-          arch: 'arm64',
-          core_count: 4,
-          extensions: [],
-          name: 'Apple M1',
-          usage: 0,
-        },
-        gpus: [],
-        os_type: 'macOS',
-        os_name: 'macOS Monterey',
-        total_memory: 8192,
-      }
-
-      ipcHandler.mockResolvedValue(mockHardwareData)
+    it('names an injected override as the source', async () => {
+      ipcHandler.mockResolvedValue({
+        info: coreInfo,
+        source: 'override',
+        probed_at: 42,
+        warnings: ['override active'],
+      })
 
       const result = await hardwareService.getHardwareInfo()
 
-      expect(result).toBeDefined()
-      expect(result.cpu).toBeDefined()
-      expect(result.gpus).toBeDefined()
-      expect(Array.isArray(result.gpus)).toBe(true)
-      expect(result.os_type).toBeDefined()
-      expect(result.os_name).toBeDefined()
-      expect(result.total_memory).toBeDefined()
+      expect(result?.source).toBe('override')
+      expect(result?.probed_at).toBe(42)
+    })
+
+    it('never asks the hardware plugin for facts', async () => {
+      ipcHandler.mockResolvedValue({
+        info: coreInfo,
+        source: 'probe',
+        probed_at: 1,
+        warnings: [],
+      })
+
+      await hardwareService.getHardwareInfo()
+
+      const commands = ipcHandler.mock.calls.map(([command]) => command)
+      expect(commands).not.toContain('plugin:hardware|get_system_info')
+    })
+
+    it('passes a core refusal through untouched', async () => {
+      const refusal = {
+        code: 'CORE_UNREACHABLE',
+        message: 'the core is not running',
+      }
+      ipcHandler.mockRejectedValue(refusal)
+
+      await expect(hardwareService.getHardwareInfo()).rejects.toBe(refusal)
+    })
+
+    it('answers null on mobile without calling anything', async () => {
+      platform.HARDWARE_MONITORING = false
+
+      const result = await hardwareService.getHardwareInfo()
+
+      expect(result).toBeNull()
+      expect(ipcHandler).not.toHaveBeenCalled()
     })
   })
 
@@ -190,6 +225,67 @@ describe('TauriHardwareService', () => {
     })
   })
 
+  describe('refreshHardwareInfo', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    afterEach(() => {
+      warnSpy.mockRestore()
+    })
+
+    it('refreshes the plugin usage rows first, then re-probes the core', async () => {
+      ipcHandler.mockResolvedValue(undefined)
+
+      await hardwareService.refreshHardwareInfo()
+
+      expect(ipcHandler).toHaveBeenCalledTimes(2)
+      expect(ipcHandler).toHaveBeenNthCalledWith(
+        1,
+        'plugin:hardware|refresh_system_info',
+        {}
+      )
+      expect(ipcHandler).toHaveBeenNthCalledWith(2, 'atomic_core_call', {
+        method: 'POST',
+        path: '/hardware/refresh',
+        body: null,
+      })
+      expect(warnSpy).not.toHaveBeenCalled()
+    })
+
+    it('swallows a core refresh failure so the usage refresh still counts', async () => {
+      const refusal = { code: 'CORE_UNREACHABLE', message: 'down' }
+      ipcHandler.mockImplementation((command: string) =>
+        command === 'atomic_core_call'
+          ? Promise.reject(refusal)
+          : Promise.resolve(undefined)
+      )
+
+      await expect(hardwareService.refreshHardwareInfo()).resolves.toBeUndefined()
+
+      expect(ipcHandler).toHaveBeenCalledTimes(2)
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to refresh hardware facts in the core:',
+        refusal
+      )
+    })
+
+    it('propagates a plugin refresh failure and does not reach the core', async () => {
+      ipcHandler.mockRejectedValue(new Error('plugin gone'))
+
+      await expect(hardwareService.refreshHardwareInfo()).rejects.toThrow(
+        'plugin gone'
+      )
+      expect(ipcHandler).toHaveBeenCalledTimes(1)
+      expect(ipcHandler).toHaveBeenCalledWith(
+        'plugin:hardware|refresh_system_info',
+        {}
+      )
+    })
+  })
+
   describe('setActiveGpus', () => {
     let consoleSpy: ReturnType<typeof vi.spyOn>
 
@@ -217,14 +313,6 @@ describe('TauriHardwareService', () => {
       expect(consoleSpy).toHaveBeenCalledWith(gpuData)
     })
 
-    it('should handle single GPU', async () => {
-      const gpuData = { gpus: [1] }
-
-      await hardwareService.setActiveGpus(gpuData)
-
-      expect(consoleSpy).toHaveBeenCalledWith(gpuData)
-    })
-
     it('should complete successfully', async () => {
       const gpuData = { gpus: [0, 1] }
 
@@ -232,30 +320,10 @@ describe('TauriHardwareService', () => {
         hardwareService.setActiveGpus(gpuData)
       ).resolves.toBeUndefined()
     })
-
-    it('should not throw any errors', async () => {
-      const gpuData = { gpus: [0, 1, 2, 3] }
-
-      expect(() => hardwareService.setActiveGpus(gpuData)).not.toThrow()
-    })
   })
 
   describe('integration tests', () => {
     it('should handle concurrent calls to getHardwareInfo and getSystemUsage', async () => {
-      const mockHardwareData: HardwareData = {
-        cpu: {
-          arch: 'x86_64',
-          core_count: 16,
-          extensions: ['AVX2'],
-          name: 'AMD Ryzen 9',
-          usage: 0,
-        },
-        gpus: [],
-        os_type: 'Linux',
-        os_name: 'Ubuntu 22.04',
-        total_memory: 32768,
-      }
-
       const mockSystemUsage: SystemUsage = {
         cpu: 15.5,
         used_memory: 16384,
@@ -263,23 +331,34 @@ describe('TauriHardwareService', () => {
         gpus: [],
       }
 
-      ipcHandler
-        .mockResolvedValueOnce(mockHardwareData)
-        .mockResolvedValueOnce(mockSystemUsage)
+      ipcHandler.mockImplementation((command: string) =>
+        command === 'atomic_core_call'
+          ? Promise.resolve({
+              info: coreInfo,
+              source: 'probe',
+              probed_at: 7,
+              warnings: [],
+            })
+          : Promise.resolve(mockSystemUsage)
+      )
 
       const [hardwareResult, usageResult] = await Promise.all([
         hardwareService.getHardwareInfo(),
         hardwareService.getSystemUsage(),
       ])
 
-      expect(hardwareResult).toEqual(mockHardwareData)
+      expect(hardwareResult).toEqual({
+        ...coreInfo,
+        source: 'probe',
+        probed_at: 7,
+      })
       expect(usageResult).toEqual(mockSystemUsage)
       expect(ipcHandler).toHaveBeenCalledTimes(2)
-      expect(ipcHandler).toHaveBeenNthCalledWith(
-        1,
-        'plugin:hardware|get_system_info',
-        {}
-      )
+      expect(ipcHandler).toHaveBeenNthCalledWith(1, 'atomic_core_call', {
+        method: 'GET',
+        path: '/hardware/info',
+        body: null,
+      })
       expect(ipcHandler).toHaveBeenNthCalledWith(
         2,
         'plugin:hardware|get_system_usage',

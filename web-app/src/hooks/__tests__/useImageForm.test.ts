@@ -20,6 +20,7 @@ describe('useImageForm', () => {
       maskBase64: null,
       maskResetKey: 0,
       referenceImages: [],
+      recipeFamily: null,
     })
   })
 
@@ -176,6 +177,99 @@ describe('useImageForm', () => {
 
     useImageForm.getState().clampTo(makeCapabilities({ maxBatch: 1 }))
     expect(useImageForm.getState().batchSize).toBe(1)
+  })
+
+  it('keeps the size and aspect the user set when a model starts', () => {
+    // What the recording showed: 640 × 480 (Photo 4:3), 10 steps, cfg 3 set
+    // while the model was stopped, then the start put Qwen's defaults back.
+    useImageForm.setState({
+      recipeFamily: 'qwen-image-2.1',
+      width: 640,
+      height: 480,
+      aspect: 'photo',
+      steps: 10,
+      cfgScale: 3,
+    })
+    useImageForm.getState().adoptModel(
+      'qwen-image-2.1',
+      makeCapabilities({
+        defaults: { steps: 40, cfgScale: 6, width: 1024, height: 1024 },
+      })
+    )
+    expect(useImageForm.getState()).toMatchObject({
+      width: 640,
+      height: 480,
+      aspect: 'photo',
+      steps: 10,
+      cfgScale: 3,
+    })
+  })
+
+  it('gives another family its own defaults, keeping the prompt', () => {
+    useImageForm.setState({
+      recipeFamily: 'qwen-image-2.1',
+      prompt: 'keep',
+      width: 640,
+      height: 480,
+      steps: 40,
+      cfgScale: 6,
+    })
+    useImageForm.getState().adoptModel(
+      'z-image',
+      makeCapabilities({
+        defaults: { steps: 8, cfgScale: 1, width: 1024, height: 1024 },
+      })
+    )
+    expect(useImageForm.getState()).toMatchObject({
+      recipeFamily: 'z-image',
+      prompt: 'keep',
+      width: 1024,
+      height: 1024,
+      aspect: 'square',
+      steps: 8,
+      cfgScale: 1,
+    })
+  })
+
+  it('takes the defaults for the first model, and keeps a restored recipe for its own', () => {
+    useImageForm.setState({ steps: 31 })
+    useImageForm.getState().adoptModel('z-image', makeCapabilities())
+    expect(useImageForm.getState()).toMatchObject({
+      recipeFamily: 'z-image',
+      steps: 8,
+    })
+
+    useImageForm
+      .getState()
+      .applyDraft({ ...DEFAULT_IMAGE_FORM, steps: 12, cfgScale: 4 }, 'flux.1')
+    useImageForm.getState().adoptModel('flux.1', makeCapabilities())
+    expect(useImageForm.getState()).toMatchObject({
+      recipeFamily: 'flux.1',
+      steps: 12,
+      cfgScale: 4,
+    })
+  })
+
+  it('names the aspect again only when clamping changed the size', () => {
+    useImageForm.setState({ width: 1000, height: 750, aspect: 'custom' })
+    useImageForm.getState().clampTo(makeCapabilities())
+    expect(useImageForm.getState()).toMatchObject({
+      width: 1008,
+      height: 752,
+      aspect: 'photo',
+    })
+
+    useImageForm.setState({ width: 1024, height: 1024, aspect: 'custom' })
+    useImageForm.getState().clampTo(makeCapabilities())
+    expect(useImageForm.getState().aspect).toBe('custom')
+  })
+
+  it('persists the family its numbers are for', () => {
+    useImageForm.getState().adoptModel('z-image', makeCapabilities())
+    const stored = JSON.parse(
+      localStorage.getItem(localStorageKey.imageForm) ?? '{}'
+    )
+    expect(stored.state.recipeFamily).toBe('z-image')
   })
 
   it('resets the workflow knobs with the rest of the numbers', () => {

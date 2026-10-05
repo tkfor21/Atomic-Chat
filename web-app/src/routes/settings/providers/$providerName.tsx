@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Card, CardItem } from '@/containers/Card'
+import { DecisionModelsSection } from '@/containers/DecisionModelsSection'
 import HeaderPage from '@/containers/HeaderPage'
 import SettingsMenu from '@/containers/SettingsMenu'
 import { useModelProvider } from '@/hooks/useModelProvider'
@@ -710,21 +711,25 @@ function ProviderDetail() {
             .fetchModelsFromProvider(prov)
           if (cancelled) return
 
-          const existing = new Set(prov.models.map((m) => m.id))
+          // The provider as it is now, not as it was before the request: the
+          // key or a setting may have been edited while it ran, and writing the
+          // earlier snapshot back would undo that. Only `models` is written.
+          const current =
+            useModelProvider.getState().getProviderByName(providerName) ?? prov
+          const existing = new Set(current.models.map((m) => m.id))
           const newModels = liveIds
             .filter((id) => !existing.has(id))
             .map((id) => ({
               id,
               model: id,
               name: id,
-              capabilities: getModelCapabilities(prov.provider, id),
+              capabilities: getModelCapabilities(current.provider, id),
               version: '1.0',
             }))
 
           if (newModels.length > 0) {
-            updateProvider(prov.provider, {
-              ...prov,
-              models: [...prov.models, ...newModels],
+            updateProvider(current.provider, {
+              models: [...current.models, ...newModels],
             })
           }
         } catch (err) {
@@ -1427,7 +1432,7 @@ function ProviderDetail() {
     ]
   )
 
-  /// Toggle the upstream-llama MTP flag (`--spec-type draft-mtp`). Qwen
+  /// Toggle the upstream-llama MTP flag (`--spec-type draft-mtp`). Embedded
   /// capability is read from canonical GGUF metadata; Gemma 4 uses a separate
   /// draft head downloaded by the extension.
   ///
@@ -1477,16 +1482,17 @@ function ProviderDetail() {
       try {
         if (nextEnabled) {
           /// Capability check. Two MTP shapes are supported:
-          ///  - Qwen built-in MTP: canonical GGUF metadata reports the embedded
-          ///    NextN layers (head inside the same GGUF).
+          ///  - Built-in MTP (Qwen3.5/3.6, Qwen3-Next, GLM, DeepSeek and every
+          ///    other upstream MTP architecture): canonical GGUF metadata
+          ///    reports the embedded NextN layers (head inside the same GGUF).
           ///  - Gemma 4 MTP (31B / 26B-A4B): needs a SEPARATE draft head GGUF
           ///    downloaded next to the model (PR #23398).
           /// If the loaded model id is neither, refuse the toggle and surface
           /// the popup — don't write the setting (the Switch stays off).
           if (activeModel) {
-            const isQwenMtp =
+            const isEmbeddedMtp =
               (await engine.checkEmbeddedMtpSupport?.(activeModel)) ?? false
-            if (!isQwenMtp) {
+            if (!isEmbeddedMtp) {
               const isGemmaMtp =
                 (await engine.checkGemmaMtpSupport?.(activeModel)) ?? false
               if (!isGemmaMtp) {
@@ -1960,22 +1966,13 @@ function ProviderDetail() {
                 }
               >
                 {provider?.settings.map((setting, settingIndex) => {
-                  // Concurrent Mode acts as a master toggle over `parallel`,
-                  // `cont_batching` and `expose_metrics`. When it's on, those
-                  // rows are visually dimmed to signal they're managed.
-                  const concurrentModeOn = !!(
-                    provider?.settings.find((s) => s.key === 'concurrent_mode')
-                      ?.controller_props as { value?: boolean } | undefined
-                  )?.value
-                  const isManagedByConcurrentMode =
-                    concurrentModeOn &&
-                    (setting.key === 'parallel' ||
-                      setting.key === 'cont_batching' ||
-                      setting.key === 'expose_metrics')
-                  // Concurrent Slots only makes sense when Concurrent Mode is
-                  // on; hide the row entirely otherwise to reduce clutter.
-                  const isHiddenByConcurrentMode =
-                    !concurrentModeOn && setting.key === 'concurrent_slots'
+                  // Concurrent Mode is not offered: its rows stay in the core's
+                  // schema, and both llama.cpp extensions switch a stored
+                  // `concurrent_mode: true` off on start
+                  // (migrateConcurrentModeOff).
+                  const isHiddenConcurrentMode =
+                    setting.key === 'concurrent_mode' ||
+                    setting.key === 'concurrent_slots'
 
                   // The DFlash speculative-decoding toggle is the master
                   // switch over `block_size`; the MTP toggle does the
@@ -2179,7 +2176,7 @@ function ProviderDetail() {
                           controllerProps={setting.controller_props}
                           className={cn(
                             setting.key === 'device' && 'hidden',
-                            isHiddenByConcurrentMode && 'hidden',
+                            isHiddenConcurrentMode && 'hidden',
                             isHiddenByDflash && 'hidden'
                           )}
                           onChange={(newValue) => {
@@ -2212,6 +2209,7 @@ function ProviderDetail() {
                             }
                             if (provider) {
                               const newSettings = [...provider.settings]
+                              const changedSettingKeys = new Set([setting.key])
                               // Handle different value types by forcing the type
                               // Use type assertion to bypass type checking
 
@@ -2220,28 +2218,6 @@ function ProviderDetail() {
                                   value: string | boolean | number
                                 }
                               ).value = newValue
-
-                              // Concurrent Mode implies Prometheus /metrics:
-                              // when the user turns the master toggle on,
-                              // reflect the implicit expose_metrics=true in
-                              // the UI so the Prometheus checkbox matches the
-                              // server-side behaviour enforced in args.rs.
-                              if (
-                                setting.key === 'concurrent_mode' &&
-                                newValue === true
-                              ) {
-                                const metricsIdx = newSettings.findIndex(
-                                  (s) => s.key === 'expose_metrics'
-                                )
-                                if (metricsIdx !== -1) {
-                                  (
-                                    newSettings[metricsIdx]
-                                      .controller_props as {
-                                      value: boolean
-                                    }
-                                  ).value = true
-                                }
-                              }
 
                               // Create update object with updated settings
                               const updateObj: Partial<ModelProvider> = {
@@ -2326,6 +2302,13 @@ function ProviderDetail() {
                                 (providerName === 'llamacpp' ||
                                   providerName === 'llamacpp-upstream')
                               ) {
+                                // Backend discovery can update version_backend while this
+                                // page still holds an older provider snapshot. Persist only
+                                // the controls this action changed, so toggling e.g. fit
+                                // cannot overwrite the selected backend and start a download.
+                                const changedSettings = newSettings.filter((item) =>
+                                  changedSettingKeys.has(item.key)
+                                )
                                 providerSettingsWriteRef.current =
                                   providerSettingsWriteRef.current
                                     .catch((error) => {
@@ -2339,7 +2322,7 @@ function ProviderDetail() {
                                         .providers()
                                         .updateSettings(
                                           providerName,
-                                          updateObj.settings ?? []
+                                          changedSettings
                                         )
                                     )
                                 debouncedRestartLlamacppModel(providerName)
@@ -2376,10 +2359,8 @@ function ProviderDetail() {
                       title={setting.title}
                       className={cn(
                         setting.key === 'device' && 'hidden',
-                        isHiddenByConcurrentMode && 'hidden',
-                        isHiddenByDflash && 'hidden',
-                        isManagedByConcurrentMode &&
-                          'opacity-60 pointer-events-none'
+                        isHiddenConcurrentMode && 'hidden',
+                        isHiddenByDflash && 'hidden'
                       )}
                       column={
                         setting.controller_type === 'input' &&
@@ -2410,14 +2391,6 @@ function ProviderDetail() {
                               ),
                             }}
                           />
-                          {setting.key === 'concurrent_slots' &&
-                            concurrentModeOn && (
-                              <div className="mt-1 text-sm text-muted-foreground">
-                                {t(
-                                  'providers:llamacpp.concurrentMode.perSlotContextWarning'
-                                )}
-                              </div>
-                            )}
                           {setting.key === 'version_backend' &&
                             setting.controller_props?.recommended && (
                               <div className="mt-1 text-sm text-muted-foreground">
@@ -2627,6 +2600,10 @@ function ProviderDetail() {
 
                 <DeleteProvider provider={provider} />
               </Card>
+
+              {/* Decision models: the column is reversed for llama.cpp, so
+                  this shows under the chat models. */}
+              {providerName === 'llamacpp' && <DecisionModelsSection />}
 
               {/* Models */}
               <Card

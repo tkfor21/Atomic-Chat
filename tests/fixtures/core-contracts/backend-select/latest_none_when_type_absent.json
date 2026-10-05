@@ -1,0 +1,21 @@
+{
+  "comparator": "json-exact",
+  "expected": null,
+  "input": {
+    "backend_type": "linux-vulkan-x64",
+    "kind": "latest",
+    "version_backends": [
+      {
+        "backend": "linux-cpu-x64",
+        "order": 0,
+        "version": "b7524"
+      }
+    ]
+  },
+  "name": "latest_none_when_type_absent",
+  "source": {
+    "commit": "7ee71026dfa05e8800bebd587f728ec49b968246",
+    "file": "src-tauri/plugins/tauri-plugin-llamacpp-upstream/src/backend.rs",
+    "provider": "llamacpp-upstream"
+  }
+}

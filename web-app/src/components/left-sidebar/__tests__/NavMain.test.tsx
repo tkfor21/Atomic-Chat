@@ -158,20 +158,10 @@ vi.mock('@/hooks/useThreadManagement', () => ({
   useThreadManagement: () => ({ addFolder: vi.fn() }),
 }))
 
-const IMAGE_WORKFLOW_LINKS: Array<[string, string]> = [
-  ['images:workflow.create.label', '/images/'],
-  ['images:workflow.transform.label', '/images/transform'],
-  ['images:workflow.inpaint.label', '/images/inpaint'],
-  ['images:workflow.extend.label', '/images/extend'],
-  ['images:workflow.upscale.label', '/images/upscale'],
-  ['images:workflow.reference.label', '/images/reference'],
-  ['images:workflow.edit.label', '/images/edit'],
-]
-
 describe('NavMain', () => {
   beforeEach(() => {
     vi.mocked(useLocation).mockReturnValue({ pathname: '/' } as never)
-    useLeftPanel.setState({ pluginsExpanded: false, imagesExpanded: false })
+    useLeftPanel.setState({ pluginsExpanded: false })
     platform.mediaGeneration = true
   })
 
@@ -184,104 +174,58 @@ describe('NavMain', () => {
     const models = labels.indexOf('common:modelHub')
     expect(models).toBeGreaterThanOrEqual(0)
     expect(labels[models + 1]).toBe('common:images')
-    expect(screen.getByTestId('images-disclosure')).toHaveAttribute(
-      'aria-expanded',
-      'false'
-    )
   })
 
   it('hides Images where the platform has no media generation', () => {
     platform.mediaGeneration = false
     render(<NavMain />)
 
-    expect(screen.queryByText('common:images')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('images-link')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('videos-link')).not.toBeInTheDocument()
     expect(screen.getByText('common:modelHub')).toBeInTheDocument()
   })
 
-  it('keeps the workflow list folded off the images page until the chevron is clicked', async () => {
-    const user = userEvent.setup()
+  it('puts Video right after Images as one row, and highlights it on its route', () => {
+    vi.mocked(useLocation).mockReturnValue({ pathname: '/videos/' } as never)
     render(<NavMain />)
 
-    expect(screen.queryByTestId('images-submenu')).not.toBeInTheDocument()
+    const labels = screen
+      .getAllByRole('listitem')
+      .map((item) => item.textContent?.trim())
+    const images = labels.indexOf('common:images')
+    expect(labels[images + 1]).toBe('common:video')
+    const link = screen.getByTestId('videos-link')
+    expect(link).toHaveAttribute('href', '/videos/')
+    expect(link.parentElement).toHaveAttribute('data-active', 'true')
+    expect(screen.getByTestId('images-link').parentElement).toHaveAttribute(
+      'data-active',
+      'false'
+    )
+  })
 
-    await user.click(screen.getByTestId('images-disclosure'))
+  it('shows Images as one row like Video: no workflow list to unfold', () => {
+    render(<NavMain />)
 
-    const submenu = screen.getByTestId('images-submenu')
-    for (const [label, href] of IMAGE_WORKFLOW_LINKS) {
-      const link = screen.getByText(label).closest('a')
-      expect(submenu).toContainElement(link)
-      expect(link).toHaveAttribute('href', href)
+    const link = screen.getByTestId('images-link')
+    expect(link).toHaveAttribute('href', '/images/')
+    // The page's own heading picks the mode; the sidebar only names the section.
+    expect(link.closest('li')?.querySelector('[aria-expanded]')).toBeNull()
+    expect(screen.queryByText('images:workflow.create.label')).toBeNull()
+    expect(screen.queryByText('images:workflow.inpaint.label')).toBeNull()
+  })
+
+  it.each(['/images/', '/images/inpaint', '/images/edit'])(
+    'highlights Images on %s',
+    (pathname) => {
+      vi.mocked(useLocation).mockReturnValue({ pathname } as never)
+      render(<NavMain />)
+
+      expect(screen.getByTestId('images-link').parentElement).toHaveAttribute(
+        'data-active',
+        'true'
+      )
     }
-    expect(useLeftPanel.getState().imagesExpanded).toBe(true)
-  })
-
-  it('toggles Images from the whole row, not only the chevron glyph', async () => {
-    const user = userEvent.setup()
-    render(<NavMain />)
-
-    await user.click(screen.getByText('common:images'))
-    expect(screen.getByTestId('images-submenu')).toBeInTheDocument()
-    expect(useLeftPanel.getState().imagesExpanded).toBe(true)
-
-    await user.click(screen.getByText('common:images'))
-    expect(screen.queryByTestId('images-submenu')).not.toBeInTheDocument()
-    expect(useLeftPanel.getState().imagesExpanded).toBe(false)
-  })
-
-  it('opens the workflow list on the images route and highlights the current workflow', () => {
-    vi.mocked(useLocation).mockReturnValue({
-      pathname: '/images/inpaint',
-    } as never)
-
-    render(<NavMain />)
-
-    expect(useLeftPanel.getState().imagesExpanded).toBe(true)
-    expect(
-      screen.getByText('images:workflow.inpaint.label').closest('[data-active]')
-    ).toHaveAttribute('data-active', 'true')
-    expect(
-      screen.getByText('images:workflow.create.label').closest('[data-active]')
-    ).toHaveAttribute('data-active', 'false')
-    // The list carries the highlight, not the group row.
-    expect(
-      screen.getByText('common:images').closest('[data-active]')
-    ).toHaveAttribute('data-active', 'false')
-  })
-
-  it('highlights Create on /images/ and leaves the other workflows plain', () => {
-    vi.mocked(useLocation).mockReturnValue({ pathname: '/images/' } as never)
-
-    render(<NavMain />)
-    expect(
-      screen.getByText('images:workflow.create.label').closest('[data-active]')
-    ).toHaveAttribute('data-active', 'true')
-    expect(
-      screen
-        .getByText('images:workflow.transform.label')
-        .closest('[data-active]')
-    ).toHaveAttribute('data-active', 'false')
-  })
-
-  it('keeps every workflow link available when the loaded model cannot run it', () => {
-    useLeftPanel.setState({ imagesExpanded: true })
-
-    render(<NavMain />)
-
-    expect(
-      screen.getByText('images:workflow.transform.label').closest('a')
-    ).not.toHaveAttribute('aria-disabled')
-    const inpaint = screen
-      .getByText('images:workflow.inpaint.label')
-      .closest('a')
-    expect(inpaint).not.toHaveAttribute('aria-disabled')
-    expect(inpaint).toHaveAttribute('href', '/images/inpaint')
-    expect(
-      screen.getByText('images:workflow.reference.label').closest('a')
-    ).toHaveAttribute('href', '/images/reference')
-    expect(
-      screen.getByText('images:workflow.edit.label').closest('a')
-    ).toHaveAttribute('href', '/images/edit')
-  })
+  )
 
   it('shows every section on the unified sidebar', () => {
     render(<NavMain />)
@@ -307,6 +251,7 @@ describe('NavMain', () => {
       'common:newChat',
       'common:modelHub',
       'common:images',
+      'common:video',
       'common:cloud',
       'common:plugins',
       'common:launch',

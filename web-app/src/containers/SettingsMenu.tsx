@@ -8,7 +8,6 @@ import { cn } from '@/lib/utils'
 import { PlatformFeatures } from '@/lib/platform/const'
 import { PlatformFeature } from '@/lib/platform/types'
 
-import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { getProviderTitle } from '@/lib/utils'
 import { sortProvidersForSettings } from '@/lib/providerOrder'
@@ -23,10 +22,6 @@ const SettingsMenu = () => {
   const navigate = useNavigate()
 
   const { providers, selectedProvider } = useModelProvider()
-  // "New" pill on Remote & LAN, cleared by the first visit to the page.
-  const remoteLanBadgeSeen = useGeneralSetting(
-    (state) => state.remoteLanBadgeSeen
-  )
 
   // Settings owns the local inference engines only. Connecting a cloud
   // provider — including Ollama and user-created OpenAI-compatible endpoints —
@@ -34,10 +29,13 @@ const SettingsMenu = () => {
   // filter, so nothing is listed in neither place.
   const localProviders = providers.filter(isLocalEngineProvider)
 
+  const turboquant = PlatformFeatures[PlatformFeature.TURBOQUANT_ENGINE]
+
   const activeProviders = sortProvidersForSettings(
     localProviders.filter((provider) => {
       if (!provider.active) return false
       if (!IS_MACOS && provider.provider === 'mlx') return false
+      if (!turboquant && provider.provider === 'llamacpp') return false
       return true
     })
   )
@@ -46,6 +44,7 @@ const SettingsMenu = () => {
     localProviders.filter((provider) => {
       if (provider.active) return false
       if (!IS_MACOS && provider.provider === 'mlx') return false
+      if (!turboquant && provider.provider === 'llamacpp') return false
       return true
     })
   )
@@ -105,7 +104,7 @@ const SettingsMenu = () => {
       hasSubMenu: false,
       isEnabled: true,
     },
-    // Privacy — вкладка скрыта
+    // Privacy — tab hidden
     // {
     //   title: 'common:privacy',
     //   route: route.settings.privacy,
@@ -136,15 +135,6 @@ const SettingsMenu = () => {
       hasSubMenu: false,
       isEnabled: true,
     },
-    {
-      // Both cards expose the Local API Server, so the page follows it:
-      // desktop only.
-      title: 'common:remote_lan',
-      route: route.settings.remote_lan,
-      hasSubMenu: false,
-      isEnabled: PlatformFeatures[PlatformFeature.LOCAL_API_SERVER],
-      isNew: !remoteLanBadgeSeen,
-    },
   ]
 
   const toggleProvidersExpansion = () => {
@@ -170,11 +160,6 @@ const SettingsMenu = () => {
                 >
                   <div className="flex items-center justify-between">
                     <span>{t(menu.title)}</span>
-                    {menu.isNew && (
-                      <span className="shrink-0 rounded-full bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-600 dark:bg-blue-400/15 dark:text-blue-400">
-                        {t('common:newBadge')}
-                      </span>
-                    )}
                     {menu.hasSubMenu && (
                       <button
                         onClick={(e) => {

@@ -22,6 +22,9 @@ describe('getProviderLogo', () => {
     )
     expect(getProviderLogo('openai')).toBe('/images/model-provider/openai.svg')
     expect(getProviderLogo('gemini')).toBe('/images/model-provider/gemini.svg')
+    expect(getProviderLogo('edenai')).toBe(
+      '/images/model-provider/edenai.svg'
+    )
     expect(getProviderLogo('nvidia')).toBe('/images/model-provider/nvidia.svg')
     expect(getProviderLogo('aimlapi')).toBe(
       '/images/model-provider/aimlapi.svg'
@@ -42,6 +45,7 @@ describe('getProviderTitle', () => {
     expect(getProviderTitle('gemini')).toBe('Gemini')
     expect(getProviderTitle('nvidia')).toBe('NVIDIA NIM')
     expect(getProviderTitle('aimlapi')).toBe('AI/ML API')
+    expect(getProviderTitle('edenai')).toBe('Eden AI')
   })
 
   it('capitalizes first letter for unknown providers', () => {

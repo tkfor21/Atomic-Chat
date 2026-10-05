@@ -1120,3 +1120,581 @@ async fn proxy_test_says_so_when_no_proxy_would_skip_the_proxy_entirely() {
 
     assert_eq!(result.kind, "bypassed");
 }
+
+// ===== Stalls, slow responses and multi-connection downloads =====
+//
+// Field feedback, 2026-09-29: "2 GB shows an hour, no progress, only a restart
+// helps". A dead connection hung the body read forever, and one connection per
+// file ran far below the link on Hugging Face's CDN.
+
+use super::helpers::TransferTuning;
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
+
+fn record_download_events(
+    app: &tauri::App<tauri::test::MockRuntime>,
+) -> Arc<std::sync::Mutex<Vec<String>>> {
+    use tauri::Listener;
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    app.listen("test-download-progress", move |event| {
+        sink.lock().unwrap().push(event.payload().to_string());
+    });
+    events
+}
+
+fn has_stage(events: &Arc<std::sync::Mutex<Vec<String>>>, kind: &str) -> bool {
+    let needle = format!("\"kind\":\"{kind}\"");
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.contains(&needle))
+}
+
+fn test_item(url: String, save_path: &std::path::Path, size: u64) -> DownloadItem {
+    DownloadItem {
+        url,
+        save_path: save_path.to_string_lossy().into_owned(),
+        proxy: None,
+        sha256: None,
+        size: Some(size),
+        model_id: Some("test/model".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn a_connection_that_goes_quiet_is_reopened_from_the_durable_offset() {
+    // The first response sends "abc" and then nothing, with the socket open.
+    let (url, server) = spawn_stalling_download_server().await;
+    let save_path = test_download_path("model.gguf");
+    let item = test_item(url, &save_path, 6);
+    let app = mock_app();
+    let events = record_download_events(&app);
+    let tuning = TransferTuning {
+        idle_timeout: Duration::from_millis(300),
+        stall_notice: Duration::from_millis(100),
+        ..TransferTuning::default()
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        download_single_file_with_tuning_for_test(
+            app.handle().clone(),
+            &item,
+            &save_path,
+            6,
+            false,
+            CancellationToken::new(),
+            tuning,
+        ),
+    )
+    .await
+    .expect("the stalled body was never given up on")
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), b"abcdef");
+    assert!(
+        has_stage(&events, "stalled"),
+        "the panel was never told: {:?}",
+        events.lock().unwrap()
+    );
+    assert!(
+        has_stage(&events, "retrying"),
+        "the reconnect ran silently: {:?}",
+        events.lock().unwrap()
+    );
+
+    server.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_server_that_never_answers_is_retried_instead_of_waited_on() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let service_count = request_count.clone();
+    let make_service = make_service_fn(move |_| {
+        let service_count = service_count.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |_request: Request<Body>| {
+                let first = service_count.fetch_add(1, Ordering::SeqCst) == 0;
+                async move {
+                    if first {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Body::from("abcdef"))
+                            .unwrap(),
+                    )
+                }
+            }))
+        }
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(Server::from_tcp(listener).unwrap().serve(make_service));
+
+    let save_path = test_download_path("model.gguf");
+    let item = test_item(format!("http://{address}/model.gguf"), &save_path, 6);
+    let tuning = TransferTuning {
+        response_timeout: Duration::from_millis(200),
+        ..TransferTuning::default()
+    };
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        download_single_file_with_tuning_for_test(
+            mock_app().handle().clone(),
+            &item,
+            &save_path,
+            6,
+            false,
+            CancellationToken::new(),
+            tuning,
+        ),
+    )
+    .await
+    .expect("waited on a response that never came")
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), b"abcdef");
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+    server.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+/// A CDN in miniature: serves `body`, honouring `bytes=a-b` / `bytes=a-`
+/// ranges unless told not to, and records where each request started.
+struct RangeServer {
+    url: String,
+    starts: Arc<std::sync::Mutex<Vec<Option<u64>>>>,
+    /// Bytes of stalled responses that were actually sent.
+    served: Arc<AtomicU64>,
+    /// This many upcoming ranged responses send half of their bytes and then
+    /// go quiet with the socket open.
+    stall_next: Arc<AtomicUsize>,
+    handle: tokio::task::JoinHandle<Result<(), hyper::Error>>,
+}
+
+fn parse_range(value: &str, size: u64) -> Option<(u64, u64)> {
+    let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
+    let start: u64 = start.parse().ok()?;
+    let end = if end.is_empty() {
+        size - 1
+    } else {
+        end.parse::<u64>().ok()?.min(size - 1)
+    };
+    (start <= end).then_some((start, end))
+}
+
+async fn spawn_range_server(body: Arc<Vec<u8>>, honour_ranges: bool) -> RangeServer {
+    let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let served = Arc::new(AtomicU64::new(0));
+    let stall_next = Arc::new(AtomicUsize::new(0));
+    let state = (starts.clone(), served.clone(), stall_next.clone(), body);
+    let make_service = make_service_fn(move |_| {
+        let state = state.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |request: Request<Body>| {
+                let (starts, served, stall_next, body) = state.clone();
+                async move {
+                    let size = body.len() as u64;
+                    let range = request
+                        .headers()
+                        .get(RANGE)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| parse_range(value, size));
+                    starts.lock().unwrap().push(range.map(|(start, _)| start));
+                    let response = match range {
+                        Some((start, end)) if honour_ranges => {
+                            let slice = body[start as usize..=end as usize].to_vec();
+                            let builder = Response::builder()
+                                .status(StatusCode::PARTIAL_CONTENT)
+                                .header(CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
+                                .header(CONTENT_LENGTH, slice.len().to_string());
+                            let stall = stall_next
+                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                    n.checked_sub(1)
+                                })
+                                .is_ok();
+                            if stall {
+                                let half = slice.len() / 2;
+                                served.fetch_add(half as u64, Ordering::SeqCst);
+                                let (mut sender, body) = Body::channel();
+                                tokio::spawn(async move {
+                                    let _ =
+                                        sender.send_data(Bytes::from(slice[..half].to_vec())).await;
+                                    std::future::pending::<()>().await;
+                                    drop(sender);
+                                });
+                                builder.body(body).unwrap()
+                            } else {
+                                builder.body(Body::from(slice)).unwrap()
+                            }
+                        }
+                        _ => Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_LENGTH, size.to_string())
+                            .body(Body::from(body.to_vec()))
+                            .unwrap(),
+                    };
+                    Ok::<_, Infallible>(response)
+                }
+            }))
+        }
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    RangeServer {
+        url: format!("http://{address}/model.gguf"),
+        starts,
+        served,
+        stall_next,
+        handle: tokio::spawn(Server::from_tcp(listener).unwrap().serve(make_service)),
+    }
+}
+
+const SEGMENTED_TEST_SIZE: usize = 256 * 1024;
+
+fn segmented_test_body() -> Arc<Vec<u8>> {
+    Arc::new(
+        (0..SEGMENTED_TEST_SIZE)
+            .map(|i| (i * 31 % 251) as u8)
+            .collect(),
+    )
+}
+
+/// Four connections over 16 KiB ranges, and timings short enough for a test.
+fn segmented_test_tuning() -> TransferTuning {
+    TransferTuning {
+        idle_timeout: Duration::from_millis(400),
+        stall_notice: Duration::from_millis(150),
+        response_timeout: Duration::from_millis(400),
+        progress_interval: Duration::from_millis(20),
+        segmented_min_size: 64 * 1024,
+        min_segment_size: 16 * 1024,
+        max_connections: 4,
+        persist_interval: Duration::from_millis(20),
+    }
+}
+
+async fn download_segmented_for_test(
+    server: &RangeServer,
+    save_path: &std::path::Path,
+    resume: bool,
+    cancel_token: CancellationToken,
+    tuning: TransferTuning,
+) -> Result<std::path::PathBuf, String> {
+    let item = test_item(server.url.clone(), save_path, SEGMENTED_TEST_SIZE as u64);
+    download_single_file_with_tuning_for_test(
+        mock_app().handle().clone(),
+        &item,
+        save_path,
+        SEGMENTED_TEST_SIZE as u64,
+        resume,
+        cancel_token,
+        tuning,
+    )
+    .await
+}
+
+fn assert_no_sidecars(save_path: &std::path::Path) {
+    for ext in ["tmp", "url", "parts", "parts.new"] {
+        let sidecar = sidecar_path(save_path, ext);
+        assert!(!sidecar.exists(), "{} was left behind", sidecar.display());
+    }
+}
+
+#[tokio::test]
+async fn a_large_file_comes_over_several_ranged_connections() {
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), true).await;
+    let save_path = test_download_path("model.gguf");
+
+    download_segmented_for_test(
+        &server,
+        &save_path,
+        false,
+        CancellationToken::new(),
+        segmented_test_tuning(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    let starts = server.starts.lock().unwrap().clone();
+    assert!(
+        starts.iter().all(Option::is_some),
+        "a request was not ranged: {starts:?}"
+    );
+    assert!(
+        starts.len() >= 4,
+        "only {} connections were opened",
+        starts.len()
+    );
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_server_that_ignores_ranges_gets_one_plain_download() {
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), false).await;
+    let save_path = test_download_path("model.gguf");
+
+    download_segmented_for_test(
+        &server,
+        &save_path,
+        false,
+        CancellationToken::new(),
+        segmented_test_tuning(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    // The ranged probe got a 200, and the file then came over one plain GET.
+    let starts = server.starts.lock().unwrap().clone();
+    assert_eq!(starts, vec![Some(0), None]);
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_saved_segment_map_resumes_only_the_missing_bytes() {
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), true).await;
+    let save_path = test_download_path("model.gguf");
+    tokio::fs::create_dir_all(save_path.parent().unwrap())
+        .await
+        .unwrap();
+
+    // The first half is on disk in a full-size partial, as a cancel leaves it.
+    let half = SEGMENTED_TEST_SIZE / 2;
+    let mut partial = body[..half].to_vec();
+    partial.resize(SEGMENTED_TEST_SIZE, 0);
+    tokio::fs::write(sidecar_path(&save_path, "tmp"), &partial)
+        .await
+        .unwrap();
+    tokio::fs::write(sidecar_path(&save_path, "url"), &server.url)
+        .await
+        .unwrap();
+    let map = serde_json::json!({
+        "version": 1,
+        "url": server.url,
+        "size": SEGMENTED_TEST_SIZE,
+        "segments": [[0, half, half], [half, half, SEGMENTED_TEST_SIZE]],
+    });
+    tokio::fs::write(sidecar_path(&save_path, "parts"), map.to_string())
+        .await
+        .unwrap();
+
+    download_segmented_for_test(
+        &server,
+        &save_path,
+        true,
+        CancellationToken::new(),
+        segmented_test_tuning(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    let starts = server.starts.lock().unwrap().clone();
+    assert!(
+        starts
+            .iter()
+            .all(|start| start.is_some_and(|start| start >= half as u64)),
+        "bytes already on disk were fetched again: {starts:?}"
+    );
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_single_stream_partial_is_taken_over_without_refetching_it() {
+    // A pause from a build that downloaded over one connection.
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), true).await;
+    let save_path = test_download_path("model.gguf");
+    tokio::fs::create_dir_all(save_path.parent().unwrap())
+        .await
+        .unwrap();
+    let prefix = 100 * 1024;
+    tokio::fs::write(sidecar_path(&save_path, "tmp"), &body[..prefix])
+        .await
+        .unwrap();
+    tokio::fs::write(sidecar_path(&save_path, "url"), &server.url)
+        .await
+        .unwrap();
+
+    download_segmented_for_test(
+        &server,
+        &save_path,
+        true,
+        CancellationToken::new(),
+        segmented_test_tuning(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    let starts = server.starts.lock().unwrap().clone();
+    assert!(
+        starts
+            .iter()
+            .all(|start| start.is_some_and(|start| start >= prefix as u64)),
+        "the partial was fetched again: {starts:?}"
+    );
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_range_whose_connection_goes_quiet_is_reopened_where_it_stopped() {
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), true).await;
+    server.stall_next.store(1, Ordering::SeqCst);
+    let save_path = test_download_path("model.gguf");
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        download_segmented_for_test(
+            &server,
+            &save_path,
+            false,
+            CancellationToken::new(),
+            segmented_test_tuning(),
+        ),
+    )
+    .await
+    .expect("the quiet range was never reopened")
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    // The probe asked for 0..64 KiB and went quiet after half of it: the half
+    // that came was kept, and the range was reopened right after it.
+    let starts = server.starts.lock().unwrap().clone();
+    assert_eq!(starts[0], Some(0));
+    assert!(
+        starts.contains(&Some(32 * 1024)),
+        "the range restarted elsewhere: {starts:?}"
+    );
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn a_cancelled_multi_connection_download_keeps_its_map_and_resumes_from_it() {
+    let body = segmented_test_body();
+    let server = spawn_range_server(body.clone(), true).await;
+    // Every connection sends half of its range and then hangs.
+    server.stall_next.store(usize::MAX, Ordering::SeqCst);
+    let save_path = test_download_path("model.gguf");
+    let tuning = TransferTuning {
+        idle_timeout: Duration::from_secs(30),
+        stall_notice: Duration::from_secs(30),
+        ..segmented_test_tuning()
+    };
+
+    let cancel_token = CancellationToken::new();
+    let running = tokio::spawn({
+        let (server_url, save_path, token, tuning) = (
+            server.url.clone(),
+            save_path.clone(),
+            cancel_token.clone(),
+            tuning.clone(),
+        );
+        async move {
+            let item = test_item(server_url, &save_path, SEGMENTED_TEST_SIZE as u64);
+            download_single_file_with_tuning_for_test(
+                mock_app().handle().clone(),
+                &item,
+                &save_path,
+                SEGMENTED_TEST_SIZE as u64,
+                false,
+                token,
+                tuning,
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server.served.load(Ordering::SeqCst) < SEGMENTED_TEST_SIZE as u64 / 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the connections never delivered their first halves");
+    cancel_token.cancel();
+    let cancelled = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("cancellation waited on a quiet connection")
+        .unwrap();
+    assert_eq!(cancelled.unwrap_err(), "Download cancelled");
+
+    let tmp_len = std::fs::metadata(sidecar_path(&save_path, "tmp"))
+        .unwrap()
+        .len();
+    assert_eq!(
+        tmp_len, SEGMENTED_TEST_SIZE as u64,
+        "the partial is not full-size"
+    );
+    let kept = super::segmented::downloaded_bytes_on_disk(&save_path);
+    assert_eq!(
+        kept,
+        SEGMENTED_TEST_SIZE as u64 / 2,
+        "the map lost what had landed"
+    );
+    let map: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sidecar_path(&save_path, "parts")).unwrap())
+            .unwrap();
+    let missing: Vec<(u64, u64)> = map["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|range| (range[1].as_u64().unwrap(), range[2].as_u64().unwrap()))
+        .filter(|(written, end)| written < end)
+        .collect();
+
+    server.stall_next.store(0, Ordering::SeqCst);
+    let requests_before = server.starts.lock().unwrap().len();
+    download_segmented_for_test(
+        &server,
+        &save_path,
+        true,
+        CancellationToken::new(),
+        segmented_test_tuning(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tokio::fs::read(&save_path).await.unwrap(), *body);
+    let resumed: Vec<u64> = server.starts.lock().unwrap()[requests_before..]
+        .iter()
+        .map(|start| start.expect("a resume request was not ranged"))
+        .collect();
+    assert!(
+        resumed.iter().all(|start| missing
+            .iter()
+            .any(|(written, end)| start >= written && start < end)),
+        "the resume fetched bytes it already had: requests at {resumed:?}, missing {missing:?}"
+    );
+    assert_no_sidecars(&save_path);
+
+    server.handle.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}

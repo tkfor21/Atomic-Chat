@@ -131,6 +131,8 @@ export function getProviderLogo(provider: string) {
     // would vanish on the light theme.
     case 'aimlapi':
       return '/images/model-provider/aimlapi.svg'
+    case 'edenai':
+      return '/images/model-provider/edenai.svg'
     case 'ollama':
       return '/images/model-provider/ollama.svg'
     default:
@@ -218,6 +220,8 @@ export const getProviderTitle = (provider: string) => {
       return 'DeepSeek'
     case 'aimlapi':
       return 'AI/ML API'
+    case 'edenai':
+      return 'Eden AI'
     case 'ollama':
       return 'Ollama'
     default:

@@ -10,6 +10,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { IconSettings } from '@tabler/icons-react'
 import { cn, getProviderTitle } from '@/lib/utils'
 import { isLocalEngineProvider } from '@/lib/cloud-providers'
+import { PlatformFeatures } from '@/lib/platform/const'
+import { PlatformFeature } from '@/lib/platform/types'
 import { sortProvidersForSettings } from '@/lib/providerOrder'
 import ProvidersAvatar from '@/containers/ProvidersAvatar'
 import { Switch } from '@/components/ui/switch'
@@ -37,7 +39,9 @@ function ModelProviders() {
         providers.filter(
           (provider) =>
             isLocalEngineProvider(provider) &&
-            (IS_MACOS || provider.provider !== 'mlx')
+            (IS_MACOS || provider.provider !== 'mlx') &&
+            (PlatformFeatures[PlatformFeature.TURBOQUANT_ENGINE] ||
+              provider.provider !== 'llamacpp')
         )
       ),
     [providers]

@@ -15,6 +15,8 @@ declare global {
   declare const IS_LINUX: boolean
   declare const IS_IOS: boolean
   declare const IS_ANDROID: boolean
+  /** The bundle targets aarch64 (`TAURI_ENV_ARCH`); macOS universal builds report their host slice. */
+  declare const IS_ARM64: boolean
   declare const PLATFORM: string
   declare const VERSION: string
   declare const POSTHOG_KEY: string

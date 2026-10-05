@@ -51,6 +51,48 @@ describe('formatDownloadReadout', () => {
     )
   })
 
+  // Field feedback, 2026-09-29: a dead connection kept quoting the last
+  // speed and ETA, so a stopped download read as a live one.
+  it('says a running transfer is stalled, and drops the estimate', () => {
+    expect(
+      formatDownloadReadout(t, {
+        ...transfer,
+        stage: { kind: 'stalled', attempt: 0, maxAttempts: 5 },
+      })
+    ).toBe('42% · common:downloadPanel.stalled · 4.20 / 12.40 GB')
+  })
+
+  it('says a running transfer is reconnecting, and drops the estimate', () => {
+    expect(
+      formatDownloadReadout(t, {
+        ...transfer,
+        stage: { kind: 'retrying', attempt: 1, maxAttempts: 5 },
+      })
+    ).toBe(
+      '42% · common:downloadPanel.retrying(attempt=1,maxAttempts=5) · 4.20 / 12.40 GB'
+    )
+  })
+
+  it('keeps the estimate while the downloader is merely connecting', () => {
+    expect(
+      formatDownloadReadout(t, {
+        ...transfer,
+        stage: { kind: 'connecting', attempt: 0, maxAttempts: 5 },
+      })
+    ).toBe('42% · 4.20 / 12.40 GB · common:downloadPanel.left(eta=7m 36s)')
+  })
+
+  it('names a stall before the first byte as the status itself', () => {
+    expect(
+      formatDownloadReadout(t, {
+        progress: 0,
+        current: 0,
+        total: 0,
+        stage: { kind: 'stalled', attempt: 0, maxAttempts: 5 },
+      })
+    ).toBe('common:downloadPanel.stalled')
+  })
+
   it('is only the stage before the first byte', () => {
     expect(
       formatDownloadReadout(t, {

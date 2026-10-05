@@ -12,7 +12,7 @@ import type { ComponentType } from 'react'
 
 import type { ImageWorkflowId } from '@/services/diffusion/types'
 
-/** One icon per workflow, shared by the sidebar rows and the form heading. */
+/** One icon per workflow, shown by the form's mode selector. */
 export const WORKFLOW_ICONS: Record<ImageWorkflowId, ComponentType<IconProps>> = {
   create: IconSparkles,
   transform: IconWand,

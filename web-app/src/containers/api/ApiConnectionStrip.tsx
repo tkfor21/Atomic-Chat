@@ -1,11 +1,13 @@
 import { IconWorld } from '@tabler/icons-react'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { CopyButton } from '@/containers/CopyButton'
 import { useAppState } from '@/hooks/useAppState'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { cn } from '@/lib/utils'
+import type { DecisionState } from '@/services/decision/types'
+import { useDecisionStore } from '@/stores/decision-store'
 import { getModelContextLength } from '@/utils/apiServerCapacity'
 import { formatCount } from '@/utils/apiServerStats'
 import { getLocalApiServerUrl } from '@/utils/localApiServerControl'
@@ -29,9 +31,45 @@ function Field({
   )
 }
 
+/** `idle` is an enabled module unloaded for idling: the next request starts it. */
+const DECISION_SERVED_STATES = new Set<DecisionState>([
+  'idle',
+  'starting',
+  'ready',
+  'restarting',
+])
+
+/** The decision model the server answers `/systemone` with, or `null` when none. */
+function useServedDecisionModel(): {
+  name: string
+  ready: boolean
+  starting: boolean
+} | null {
+  const status = useDecisionStore((s) => s.status)
+  const config = useDecisionStore((s) => s.config)
+  const catalog = useDecisionStore((s) => s.catalog)
+
+  useEffect(() => useDecisionStore.getState().bind(), [])
+
+  if (!status?.enabled || !DECISION_SERVED_STATES.has(status.state)) return null
+  const id = config?.model_id ?? ''
+  const name =
+    catalog.models.find((model) => model.id === id)?.name ||
+    id ||
+    status.model_path?.split(/[\\/]/).pop() ||
+    ''
+  if (!name) return null
+  return {
+    name,
+    ready: status.state === 'ready',
+    starting: status.state === 'starting' || status.state === 'restarting',
+  }
+}
+
 export function ApiConnectionStrip() {
   const { t } = useTranslation()
   const { serverStatus, activeModels } = useAppState()
+  const decisionModel = useServedDecisionModel()
   const { serverHost, serverPort, apiPrefix } = useLocalApiServer()
 
   const url = useMemo(
@@ -49,7 +87,7 @@ export function ApiConnectionStrip() {
       ? { tone: 'idle', label: t('api:status.stopped') }
       : serverStatus === 'pending'
         ? { tone: 'pending', label: t('api:status.starting') }
-        : loadedModel
+        : loadedModel || decisionModel?.ready
           ? { tone: 'ready', label: t('api:status.ready') }
           : { tone: 'idle', label: t('api:status.noModel') }
 
@@ -93,6 +131,20 @@ export function ApiConnectionStrip() {
           ) : null}
         </span>
       </Field>
+
+      {decisionModel && (
+        <Field label={t('api:strip.decisionModel')} className="flex-1">
+          <span className="block truncate" title={decisionModel.name}>
+            {decisionModel.name}
+            {decisionModel.starting && (
+              <span className="text-muted-foreground">
+                {' · '}
+                {t('api:status.starting')}
+              </span>
+            )}
+          </span>
+        </Field>
+      )}
     </div>
   )
 }

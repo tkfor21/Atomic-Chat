@@ -38,6 +38,7 @@ export default defineConfig({
     IS_LINUX: JSON.stringify(false),
     IS_IOS: JSON.stringify(false),
     IS_ANDROID: JSON.stringify(false),
+    IS_ARM64: JSON.stringify(false),
     PLATFORM: JSON.stringify('web'),
     VERSION: JSON.stringify('test'),
     POSTHOG_KEY: JSON.stringify(''),

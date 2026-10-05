@@ -1,14 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   makeCapabilities,
+  makeCatalog,
   makeFakeDiffusion,
+  makeFilesFor,
   makeJob,
   makeLoadedStatus,
   makeStatus,
   Q4_ID,
+  Z_IMAGE,
   type FakeDiffusion,
 } from '@/lib/diffusion/__tests__/image-fixtures'
 import { seedServiceHub } from '@/test/service-hub'
@@ -22,7 +25,7 @@ vi.mock('@tanstack/react-router', () => ({
     <a href={to}>{children}</a>
   ),
 }))
-vi.mock('@/lib/notifications', () => ({ notifyThreadCompleted: vi.fn() }))
+vi.mock('@/lib/notifications', () => ({ notifyWhenAway: vi.fn() }))
 vi.mock('@/lib/telemetry-queue', () => ({ queuedCapture: vi.fn() }))
 vi.mock('@/lib/clipboard', () => ({
   copyToClipboard: vi.fn(async () => true),
@@ -31,6 +34,8 @@ vi.mock('@/lib/clipboard', () => ({
 import { DEFAULT_IMAGE_FORM, useImageForm } from '@/hooks/useImageForm'
 import { useImageSetting } from '@/hooks/useImageSetting'
 import { copyToClipboard } from '@/lib/clipboard'
+import { previewImageCapabilities } from '@/lib/diffusion/capabilities'
+import { listInstalledArtifacts } from '@/lib/diffusion/models'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
 import { ImagePromptForm } from '../ImagePromptForm'
 
@@ -220,8 +225,13 @@ describe('ImagePromptForm', () => {
     useImageSetting.setState({ advancedOpen: true })
     render(<ImagePromptForm />)
 
+    // Reset sits in the settings heading, not in the page heading.
+    const heading = screen.getByTestId('image-settings-heading')
+    expect(heading).toHaveTextContent('common:settings')
     await act(async () => {
-      await userEvent.click(screen.getByText('images:form.reset'))
+      await userEvent.click(
+        within(heading).getByRole('button', { name: 'images:form.reset' })
+      )
     })
 
     const state = useImageForm.getState()
@@ -346,5 +356,108 @@ describe('ImagePromptForm', () => {
       'images:model.select'
     )
     expect(screen.getByTestId('image-generate')).toBeDisabled()
+  })
+  describe('with the picked model stopped', () => {
+    // Qwen-Image's shape: cfg 2.5, so it takes a negative prompt.
+    const QWEN = {
+      ...Z_IMAGE,
+      id: 'qwen-image',
+      name: 'Qwen-Image',
+      defaults: { steps: 20, cfg_scale: 2.5, width: 1024, height: 1024 },
+    } as typeof Z_IMAGE
+    const QWEN_ID = 'qwen-image:q4_k_m'
+    const realLoad = useImageGenerationStore.getState().loadModel
+
+    beforeEach(() => {
+      const catalog = makeCatalog([Z_IMAGE, QWEN])
+      const files = makeFilesFor(QWEN, 'q4_k_m')
+      useImageGenerationStore.setState({
+        catalog,
+        modelFiles: files,
+        installedArtifacts: listInstalledArtifacts(catalog, files),
+        paths: {
+          dataFolder: '/data',
+          modelsRoot: '/data/diffusion/models',
+          backendsRoot: '/data/diffusion/backends',
+          imagesDir: '/data/images',
+          videosDir: '/data/videos',
+        },
+        status: makeStatus(),
+        capabilities: null,
+        loadModel: realLoad,
+      })
+      useImageSetting.setState({ selectedArtifactId: QWEN_ID })
+      useImageForm.setState({ recipeFamily: 'qwen-image', prompt: 'a cat' })
+    })
+
+    it('shows the negative prompt and Reset at once, and lets Generate start it', () => {
+      render(<ImagePromptForm />)
+      expect(screen.getByText('images:form.negativePrompt')).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'images:form.reset' })
+      ).toBeInTheDocument()
+      expect(screen.getByTestId('image-generate')).toBeEnabled()
+    })
+
+    it('gives a newly picked family its defaults before it starts', () => {
+      useImageForm.setState({ recipeFamily: 'z-image', steps: 8, cfgScale: 1 })
+      render(<ImagePromptForm />)
+      expect(useImageForm.getState()).toMatchObject({
+        recipeFamily: 'qwen-image',
+        steps: 20,
+        cfgScale: 2.5,
+      })
+    })
+
+    it('starts the model on Generate and generates with what was set before', async () => {
+      useImageForm.setState({
+        width: 640,
+        height: 480,
+        aspect: 'photo',
+        steps: 10,
+        cfgScale: 3,
+      })
+      let finishLoad = () => {}
+      const loadModel = vi.fn(
+        (id: string) =>
+          new Promise<void>((resolve) => {
+            useImageGenerationStore.setState({ loadingArtifactId: id })
+            finishLoad = () => {
+              useImageGenerationStore.setState({
+                loadingArtifactId: null,
+                status: makeLoadedStatus(id),
+                capabilities: previewImageCapabilities(QWEN),
+              })
+              resolve()
+            }
+          })
+      )
+      useImageGenerationStore.setState({ loadModel })
+      fake.generate.mockImplementation(async () => ({ jobId: 'job-1' }))
+      render(<ImagePromptForm />)
+
+      await userEvent.click(screen.getByTestId('image-generate'))
+      expect(loadModel).toHaveBeenCalledWith(QWEN_ID)
+      expect(screen.getByTestId('image-generate')).toHaveTextContent(
+        'images:form.starting'
+      )
+
+      await act(async () => finishLoad())
+      await waitFor(() => expect(fake.generate).toHaveBeenCalledTimes(1))
+      expect(fake.generate.mock.calls[0][0]).toMatchObject({
+        prompt: 'a cat',
+        width: 640,
+        height: 480,
+        steps: 10,
+        cfgScale: 3,
+      })
+      expect(useImageForm.getState()).toMatchObject({
+        width: 640,
+        height: 480,
+        aspect: 'photo',
+        steps: 10,
+        cfgScale: 3,
+      })
+    })
   })
 })

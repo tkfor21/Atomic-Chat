@@ -1,5 +1,6 @@
 import type { ServiceHub } from '@/services'
 import { useDownloadStore } from '@/hooks/useDownloadStore'
+import { isDecisionDownloadTaskId } from '@/lib/decision/models'
 import { isDiffusionModelDownloadTaskId } from '@/lib/diffusion/models'
 import { cancelTransfer } from '@/services/diffusion/transfer'
 
@@ -61,7 +62,10 @@ export function cancelDownload(
     clearPausedDownload(key)
     clearResumeParams(key)
   }
-  if (isDiffusionModelDownloadTaskId(download.id)) {
+  if (
+    isDiffusionModelDownloadTaskId(download.id) ||
+    isDecisionDownloadTaskId(download.id)
+  ) {
     void cancelTransfer(download.id)
   } else if (
     download.id.startsWith('llamacpp') ||

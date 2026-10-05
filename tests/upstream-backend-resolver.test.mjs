@@ -59,6 +59,23 @@ test('a CUDA family id resolves to the highest minor the tag ships', () => {
   )
 })
 
+test('an arm64 CUDA family resolves only against arm64 assets', () => {
+  const assets = [
+    'llama-b11344-bin-win-cuda-13.5-x64.zip',
+    'llama-b11344-bin-win-cuda-13.4-arm64.zip',
+    'llama-b11344-bin-win-cpu-arm64.zip',
+  ]
+  assert.equal(
+    resolveCudaFamily('win-cuda-13-arm64', 'b11344', assets),
+    'win-cuda-13.4-arm64'
+  )
+  assert.equal(resolveCudaFamily('win-cuda-12-arm64', 'b11344', assets), null)
+  assert.equal(
+    assetNameFor('b11344', 'win-cpu-arm64'),
+    'llama-b11344-bin-win-cpu-arm64.zip'
+  )
+})
+
 test('a mirrored asset resolves to our release stream with its hash', () => {
   const manifest = {
     tag_name: 'b10405',

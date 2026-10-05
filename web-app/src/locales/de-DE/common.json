@@ -27,6 +27,7 @@
   "hub": "Hub",
   "models": "Modelle",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Hilfe & Support",
   "helpUsImproveJan": "Hilf uns Atomic Bot zu verbessern",
@@ -393,5 +394,12 @@
     "title": "Plugins",
     "emptySkills": "Noch keine Skills",
     "manageSkills": "Skills verwalten"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Modell heruntergeladen",
+    "modelReadyBody": "{{name}} ist einsatzbereit.",
+    "engineReadyTitle": "Engine installiert",
+    "chatEngineReadyBody": "llama.cpp ist bereit, Modelle auszuführen.",
+    "mediaEngineReadyBody": "Die Bild- und Video-Engine ist bereit."
   }
 }

@@ -17,7 +17,7 @@ type SearchParams = {
 /**
  * `/images/<workflow>` — the same page as `/images/`, opened on one of the
  * image-to-image workflows. The route is the source of truth for which
- * workflow is active, so every sidebar entry is a plain link and a deep
+ * workflow is active, so the form's mode selector only navigates and a deep
  * link lands on the right form. `create` lives at `/images/`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

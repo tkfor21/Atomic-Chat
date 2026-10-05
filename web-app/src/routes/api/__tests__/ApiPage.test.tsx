@@ -19,8 +19,32 @@ const { control, clearFeed, hydrateFeed, appState } = vi.hoisted(() => ({
   hydrateFeed: vi.fn().mockResolvedValue(undefined),
   appState: {
     serverStatus: 'running' as const,
-    activeModels: ['gemma-4'],
+    activeModels: ['gemma-4'] as string[],
   },
+}))
+
+vi.mock('@/lib/decision/models', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/decision/models')>()),
+  isDecisionModelInstalled: vi.fn().mockResolvedValue(false),
+}))
+
+vi.mock('@/services/decision-catalog-registry', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('@/services/decision-catalog-registry')
+    >()
+  return {
+    ...actual,
+    fetchDecisionCatalog: vi.fn(async () => ({
+      catalog: actual.getBaselineDecisionCatalog(),
+      source: 'baseline',
+    })),
+  }
+})
+
+const { features, sectionServer } = vi.hoisted(() => ({
+  features: { localApiServer: true } as Record<string, boolean>,
+  sectionServer: vi.fn(),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -66,6 +90,15 @@ vi.mock('@/containers/api/ApiSettingsPopover', () => ({
   ApiSettingsPopover: () => <button>api:actions.settings</button>,
 }))
 
+vi.mock('@/lib/platform/const', () => ({ PlatformFeatures: features }))
+
+vi.mock('@/containers/remote-lan/RemoteLanSection', () => ({
+  RemoteLanSection: ({ server }: { server: unknown }) => {
+    sectionServer(server)
+    return <section aria-label="remote-lan" />
+  },
+}))
+
 vi.mock('@/containers/HeaderPage', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
@@ -85,8 +118,24 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 
 import { resetFeedBuffers } from '@/hooks/useApiServerLogFeed'
+import type {
+  DecisionService,
+  DecisionState,
+} from '@/services/decision/types'
+import { useDecisionStore } from '@/stores/decision-store'
+import { seedServiceHub } from '@/test/service-hub'
 
 import { ApiPage } from '../index'
+
+const getDecisionConfig = vi.fn()
+const initialDecision = useDecisionStore.getState()
+
+function decisionAs(state: DecisionState, enabled = state !== 'disabled') {
+  getDecisionConfig.mockResolvedValue({
+    config: { enabled, model_id: 'laya-multilingual' },
+    status: { state, enabled, model_path: '/data/decision/models/laya-multilingual', error: null },
+  })
+}
 
 function request(id: string, overrides: Partial<ApiRequestEntry> = {}): ApiRequestEntry {
   return {
@@ -112,6 +161,46 @@ describe('ApiPage', () => {
     resetFeedBuffers()
     store().reset()
     store().hydrate([])
+    features.localApiServer = true
+    appState.activeModels = ['gemma-4']
+    useDecisionStore.setState(initialDecision, true)
+    decisionAs('disabled')
+    seedServiceHub({
+      decision: {
+        isSupported: () => true,
+        getConfig: getDecisionConfig,
+        subscribe: () => () => {},
+      } as unknown as DecisionService,
+    })
+  })
+
+  it('names the decision model the server answers /systemone with', async () => {
+    decisionAs('ready')
+    render(<ApiPage />)
+    expect(await screen.findByText('Laya Multilingual')).toBeInTheDocument()
+    expect(screen.getByText('api:strip.decisionModel')).toBeInTheDocument()
+    expect(screen.getByText('gemma-4')).toBeInTheDocument()
+  })
+
+  it('reads Ready from a decision model alone, and marks one still starting', async () => {
+    appState.activeModels = []
+    decisionAs('ready')
+    const { unmount } = render(<ApiPage />)
+    expect(await screen.findByText('api:status.ready')).toBeInTheDocument()
+    unmount()
+
+    decisionAs('starting')
+    render(<ApiPage />)
+    expect(await screen.findByText(/api:status\.starting/)).toBeInTheDocument()
+    expect(screen.getByText('api:status.noModel')).toBeInTheDocument()
+  })
+
+  it('leaves the decision field out while the module is off', async () => {
+    render(<ApiPage />)
+    await waitFor(() =>
+      expect(useDecisionStore.getState().status?.state).toBe('disabled')
+    )
+    expect(screen.queryByText('api:strip.decisionModel')).not.toBeInTheDocument()
   })
 
   it('renders the header, the strip and the six stat tiles', () => {
@@ -128,6 +217,20 @@ describe('ApiPage', () => {
     ]) {
       expect(screen.getByText(key)).toBeInTheDocument()
     }
+  })
+
+  it('hosts Remote & LAN on the same server control as the header button', () => {
+    render(<ApiPage />)
+    expect(screen.getByRole('region', { name: 'remote-lan' })).toBeInTheDocument()
+    expect(sectionServer).toHaveBeenCalledWith(control)
+  })
+
+  it('leaves Remote & LAN out where there is no Local API Server', () => {
+    features.localApiServer = false
+    render(<ApiPage />)
+    expect(
+      screen.queryByRole('region', { name: 'remote-lan' })
+    ).not.toBeInTheDocument()
   })
 
   it('shows the empty state until traffic arrives', () => {

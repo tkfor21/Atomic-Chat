@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { DownloadPanel } from '../DownloadPanel'
 import type { DownloadRowProps } from '../DownloadProgressRow'
@@ -135,5 +135,57 @@ describe('DownloadPanel width', () => {
 
     expect(screen.getByRole('region')).toHaveClass(PANEL_WIDTH_CLASS)
     expect(screen.getByTitle('diffusion-model-flux:q4')).toBeInTheDocument()
+  })
+})
+
+/**
+ * 2026-09-30 feedback: after the first message on the home screen the panel
+ * sat over the new thread's composer until it was collapsed and expanded. The
+ * thread mounts a composer of its own; the panel kept measuring the one that
+ * had just left the page.
+ */
+describe('DownloadPanel placement', () => {
+  /** A composer as wide as the content column, spanning the panel's corner. */
+  function composer(top: number): HTMLElement {
+    const element = document.createElement('div')
+    element.setAttribute('data-composer-anchor', '')
+    element.getBoundingClientRect = () =>
+      ({
+        top,
+        bottom: top + 100,
+        left: 100,
+        right: window.innerWidth - 24,
+        height: 100,
+        width: window.innerWidth - 124,
+        x: 100,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect
+    return element
+  }
+
+  afterEach(() => {
+    document
+      .querySelectorAll('[data-composer-anchor]')
+      .forEach((element) => element.remove())
+  })
+
+  it('docks above the composer of a thread that replaced the home screen', async () => {
+    // Centred on the home screen, with room for the panel beneath it.
+    const home = composer(200)
+    document.body.appendChild(home)
+    render(<DownloadPanel items={[row('text-model-q4_k_m')]} />)
+    expect(screen.getByRole('region').style.bottom).toBe('16px')
+
+    // The first message opens the thread: its composer is pinned to the bottom.
+    home.remove()
+    const threadTop = window.innerHeight - 116
+    document.body.appendChild(composer(threadTop))
+
+    await waitFor(() =>
+      expect(screen.getByRole('region').style.bottom).toBe(
+        `${window.innerHeight - threadTop + 12}px`
+      )
+    )
   })
 })

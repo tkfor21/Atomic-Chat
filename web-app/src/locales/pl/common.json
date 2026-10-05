@@ -27,6 +27,7 @@
   "hub": "Centrum Modeli",
   "models": "Modele",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Pomoc i Obsługa",
   "helpUsImproveJan": "Pomóż nam ulepszyć Atomic Bot",
@@ -393,5 +394,12 @@
     "title": "Wtyczki",
     "emptySkills": "Brak umiejętności",
     "manageSkills": "Zarządzaj umiejętnościami"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Model pobrany",
+    "modelReadyBody": "{{name}} jest gotowy do użycia.",
+    "engineReadyTitle": "Silnik zainstalowany",
+    "chatEngineReadyBody": "llama.cpp jest gotowy do uruchamiania modeli.",
+    "mediaEngineReadyBody": "Silnik obrazów i wideo jest gotowy."
   }
 }

@@ -13,7 +13,10 @@ import {
 const { capture, toastError, features } = vi.hoisted(() => ({
   capture: vi.fn(),
   toastError: vi.fn(),
-  features: { localApiServer: true } as Record<string, boolean>,
+  features: { localApiServer: true, remoteAccess: true } as Record<
+    string,
+    boolean
+  >,
 }))
 
 vi.mock('@/lib/telemetry-queue', () => ({ queuedCapture: capture }))
@@ -82,18 +85,23 @@ function mountHub() {
     }),
   }
   seedServiceHub({ app: app as never, events: events as never })
+  /** Delivers a relayed core event the way Tauri would. */
+  const emit = (name: string, payload: unknown) => {
+    const handler = handlers.get(name)
+    if (!handler) throw new Error(`the hook never subscribed to ${name}`)
+    act(() => handler({ payload }))
+  }
   return {
     app,
     events,
     unlisten,
-    /** Delivers a `remote-access:status` event the way Tauri would. */
-    emitStatus: (payload: unknown) => {
-      const handler = handlers.get(REMOTE_ACCESS_STATUS_EVENT)
-      if (!handler) throw new Error('the hook never subscribed')
-      act(() => handler({ payload }))
-    },
+    emit,
+    emitStatus: (payload: unknown) => emit(REMOTE_ACCESS_STATUS_EVENT, payload),
   }
 }
+
+/** The relay's snapshot, sent on every (re)attach to a core and every resync. */
+const CORE_ATTACHED_EVENT = 'atomic-core://snapshot'
 
 const tunnel = () => useRemoteAccessStore.getState()
 
@@ -115,6 +123,7 @@ describe('useRemoteAccessSync', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     features.localApiServer = true
+    features.remoteAccess = true
     localStorage.clear()
     useRemoteAccessStore.getState().reset()
     useAppState.setState({ serverStatus: 'stopped' })
@@ -202,17 +211,60 @@ describe('useRemoteAccessSync', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain('trycloudflare')
   })
 
-  it('marks remote access unavailable when the status command is missing', async () => {
+  it('marks remote access unavailable when the reply is not a status', async () => {
     const { app } = mountHub()
-    app.getRemoteAccessStatus.mockRejectedValue(
-      'Command get_remote_access_status not found'
-    )
+    // What `services/app/tauri.ts` rejects with for such a reply.
+    app.getRemoteAccessStatus.mockRejectedValue(new Error('malformed_status'))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     renderHook(() => useRemoteAccessSync())
 
     await waitFor(() => expect(tunnel().unavailable).toBe(true))
     expect(tunnel().status).toBeNull()
+    warn.mockRestore()
+  })
+
+  it('rides out a core that did not answer, drops a tunnel the core took down, and re-reads on the next snapshot', async () => {
+    const { app, emit } = mountHub()
+    useAppState.setState({ serverStatus: 'running' })
+    app.getRemoteAccessStatus.mockResolvedValue(ONLINE)
+    renderHook(() => useRemoteAccessSync())
+    await waitFor(() => expect(tunnel().status).toEqual(ONLINE))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // A read the core does not answer says nothing while the server is up.
+    app.getRemoteAccessStatus.mockRejectedValue({
+      code: 'CORE_UNREACHABLE',
+      message: 'The Atomic Chat core did not answer.',
+    })
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await settled(app, 2)
+
+    expect(tunnel().unavailable).toBe(false)
+    expect(tunnel().status).toEqual(ONLINE)
+
+    // The core crashed with the server in it and will not come back on its
+    // own: the re-read the server transition asks for is refused by the
+    // relay, and the tunnel went down with the server.
+    app.getRemoteAccessStatus.mockRejectedValue({
+      code: 'CORE_START_FAILED',
+      message: 'The Atomic Chat core keeps stopping.',
+    })
+    setServerStatus('stopped')
+    await settled(app, 3)
+
+    expect(tunnel().unavailable).toBe(false)
+    expect(tunnel().status).toBeNull()
+    expect(warn).toHaveBeenCalled()
+
+    // A relaunched core starts with no tunnel.
+    app.getRemoteAccessStatus.mockResolvedValue(OFF)
+    emit(CORE_ATTACHED_EVENT, { generation: 2, snapshot: {} })
+
+    await waitFor(() => expect(tunnel().status).toEqual(OFF))
+    expect(tunnel().unavailable).toBe(false)
     warn.mockRestore()
   })
 
@@ -249,15 +301,20 @@ describe('useRemoteAccessSync', () => {
     expect(app.getRemoteAccessStatus).toHaveBeenCalledTimes(2)
   })
 
-  it('detaches from the event and the window on unmount', async () => {
-    const { app, unlisten } = mountHub()
+  it('detaches from the events and the window on unmount', async () => {
+    const { app, events, unlisten } = mountHub()
     const { unmount } = renderHook(() => useRemoteAccessSync())
     await waitFor(() => expect(tunnel().status).toEqual(OFF))
+    expect(events.listen).toHaveBeenCalledWith(
+      CORE_ATTACHED_EVENT,
+      expect.any(Function)
+    )
 
     unmount()
     window.dispatchEvent(new Event('focus'))
 
-    expect(unlisten).toHaveBeenCalledTimes(1)
+    // One for the status event, one for the snapshot.
+    expect(unlisten).toHaveBeenCalledTimes(2)
     expect(app.getRemoteAccessStatus).toHaveBeenCalledTimes(1)
     expect(tunnel().status).toEqual(OFF)
   })
@@ -374,7 +431,7 @@ describe('useRemoteAccessSync', () => {
       renderHook(() => useRemoteAccessSync())
       await waitFor(() => expect(tunnel().status).toEqual(ONLINE))
 
-      // Rust drops the tunnel together with the server.
+      // The core drops the tunnel together with the server.
       const stopped = { ...OFF, blockReason: 'server_stopped' as const }
       app.getRemoteAccessStatus.mockResolvedValue(stopped)
       setServerStatus('stopped')
@@ -426,6 +483,23 @@ describe('useRemoteAccessSync', () => {
 
     expect(events.listen).not.toHaveBeenCalled()
     expect(app.getRemoteAccessStatus).not.toHaveBeenCalled()
+    expect(app.startRemoteAccess).not.toHaveBeenCalled()
+    expect(tunnel().status).toBeNull()
+  })
+
+  it('does nothing in a build without the tunnel (Windows arm64)', async () => {
+    features.remoteAccess = false
+    const { app, events } = mountHub()
+    useLocalApiServer.setState({
+      remoteAccessAutoStart: true,
+      apiKey: 'sk-atomic-key',
+    })
+
+    renderHook(() => useRemoteAccessSync())
+    setServerStatus('running')
+    await act(async () => {})
+
+    expect(events.listen).not.toHaveBeenCalled()
     expect(app.startRemoteAccess).not.toHaveBeenCalled()
     expect(tunnel().status).toBeNull()
   })

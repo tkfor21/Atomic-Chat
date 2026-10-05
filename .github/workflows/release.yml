@@ -18,6 +18,10 @@ on:
         description: "Build Windows (temporarily disabled)"
         type: boolean
         default: false
+      build_windows_arm64:
+        description: "Build Windows ARM64 (NSIS)"
+        type: boolean
+        default: false
       build_linux:
         description: "Build Linux x86_64 (AppImage)"
         type: boolean
@@ -31,7 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_url: ${{ steps.create_release.outputs.url }}
       version: ${{ steps.get_version.outputs.version }}
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Extract version from tag
         id: get_version
@@ -53,6 +61,37 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Telegram notifications are skipped while the TELEGRAM_* secrets are unset and never fail the release.
+      - name: Notify Telegram that the release started
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+          RELEASE_URL: ${{ steps.create_release.outputs.url }}
+          BUILD_MACOS: ${{ github.event_name == 'push' || inputs.build_macos }}
+          BUILD_WINDOWS: ${{ github.event_name == 'push' || inputs.build_windows }}
+          BUILD_WINDOWS_ARM64: ${{ github.event_name == 'push' || inputs.build_windows_arm64 }}
+          BUILD_LINUX: ${{ github.event_name == 'push' || inputs.build_linux }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          platforms=""
+          [ "$BUILD_MACOS" = true ] && platforms="$platforms macOS"
+          [ "$BUILD_WINDOWS" = true ] && platforms="$platforms Windows"
+          [ "$BUILD_WINDOWS_ARM64" = true ] && platforms="$platforms Windows-ARM64"
+          [ "$BUILD_LINUX" = true ] && platforms="$platforms Linux"
+          kind="релиз"
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && kind="prerelease, ручной запуск"
+          text="$(printf '%s\n' \
+            "🚀 <b>Atomic Chat v$VERSION</b>: сборка поставлена ($kind)" \
+            "Платформы:${platforms:- нет}" \
+            "Ref: <code>$GITHUB_REF_NAME</code> (<code>${GITHUB_SHA:0:7}</code>)" \
+            "Запустил: $GITHUB_ACTOR" \
+            "<a href=\"$run_url\">Билд</a> · <a href=\"$RELEASE_URL\">Draft-релиз</a>")"
+          curl -fsS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+            --data-urlencode "text=$text" \
+            -d parse_mode=HTML -d disable_web_page_preview=true > /dev/null
 
   # ──────────────────────────────────────────────────────────────
   # Polished release notes (LLM-generated from git log between tags)
@@ -262,6 +301,38 @@ jobs:
           file src-tauri/icons/dmg/background.png
           ls -la src-tauri/icons/dmg/background.png
 
+      - name: Prepare bundled binaries (sidecars, atomic-chat-core, CLI)
+        run: |
+          yarn copy:assets:tauri
+
+          echo "=== Pre-build DMG verification ==="
+          file src-tauri/icons/dmg/background.png
+          grep -A2 '"background"' src-tauri/tauri.macos.conf.json
+
+          yarn download:bin
+          yarn download:core
+          # The release targets universal-apple-darwin, so the Remote access
+          # sidecar has to be a real fat binary (download-bin.mjs lipo's the
+          # two verified slices). One architecture under the universal name
+          # would only surface on an Intel Mac, as "bad CPU type".
+          cloudflared_archs="$(lipo -archs src-tauri/resources/bin/cloudflared-universal-apple-darwin)"
+          echo "cloudflared universal sidecar architectures: ${cloudflared_archs}"
+          case " ${cloudflared_archs} " in *" x86_64 "*) ;; *) echo "::error::cloudflared sidecar lacks the x86_64 slice"; exit 1 ;; esac
+          case " ${cloudflared_archs} " in *" arm64 "*) ;; *) echo "::error::cloudflared sidecar lacks the arm64 slice"; exit 1 ;; esac
+          yarn build:foundation-models-server
+          # Copies atomic-chat-core to jan-cli and signs the core pair with the
+          # imported Developer ID (hardened runtime + sidecar entitlements).
+          yarn build:cli
+
+      # Runs after the binaries are in place: the tauri build script requires
+      # every bundled resource and externalBin (jan-cli, the core pair, bun,
+      # uv, cloudflared) and the generated icons to exist, so this gate cannot
+      # compile any earlier in the job.
+      - name: Gate atomic-core lock identity (macOS)
+        timeout-minutes: 20
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::atomic_core::lock::tests::
+
       - name: Build app (universal binary)
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
@@ -287,25 +358,7 @@ jobs:
           SENTRY_ENVIRONMENT: production
           SENTRY_RELEASE: ${{ github.sha }}
         run: |
-          yarn copy:assets:tauri
-
-          echo "=== Pre-build DMG verification ==="
-          file src-tauri/icons/dmg/background.png
-          grep -A2 '"background"' src-tauri/tauri.macos.conf.json
-          echo "=== Building ==="
-
-          yarn download:bin
-          # The release targets universal-apple-darwin, so the Remote access
-          # sidecar has to be a real fat binary (download-bin.mjs lipo's the
-          # two verified slices). One architecture under the universal name
-          # would only surface on an Intel Mac, as "bad CPU type".
-          cloudflared_archs="$(lipo -archs src-tauri/resources/bin/cloudflared-universal-apple-darwin)"
-          echo "cloudflared universal sidecar architectures: ${cloudflared_archs}"
-          case " ${cloudflared_archs} " in *" x86_64 "*) ;; *) echo "::error::cloudflared sidecar lacks the x86_64 slice"; exit 1 ;; esac
-          case " ${cloudflared_archs} " in *" arm64 "*) ;; *) echo "::error::cloudflared sidecar lacks the arm64 slice"; exit 1 ;; esac
-          yarn build:foundation-models-server
-          yarn build:cli
-          # Универсальная macOS-сборка + переименование VOLNAME с версией + ресигн/нотаризация DMG
+          # Universal macOS build + VOLNAME rename with the version + DMG re-sign/notarization
           make build-mac
 
       - name: Upload Rust debug files to Sentry (macOS)
@@ -544,6 +597,38 @@ jobs:
       - name: Download binaries (bun, uv, cloudflared)
         run: yarn download:bin
 
+      - name: Download the pinned atomic-chat-core release
+        run: yarn download:core
+
+      # The core pair ships as bundle resources, and "Sign Windows binaries
+      # with DigiCert" below runs after `tauri build`, when they are already
+      # packed inside the installers — so they are signed here, before
+      # bundling. Build CLI copies the signed atomic-chat-core.exe to
+      # jan-cli.exe. Bun keeps the payload in a `.bun` PE section, which the
+      # appended Authenticode signature leaves intact; --verify-only runs both
+      # signed binaries to prove it.
+      - name: Sign the atomic-chat-core binaries with DigiCert
+        shell: pwsh
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_HOST: https://clientauth.one.digicert.com
+        run: |
+          if (-not $env:SM_CODE_SIGNING_CERT_SHA1_HASH) {
+            throw "SM_CODE_SIGNING_CERT_SHA1_HASH is not set (certsync did not capture a fingerprint)"
+          }
+          foreach ($name in @('atomic-chat-core.exe', 'atomic-chat-app-core.exe')) {
+            $path = "src-tauri\resources\bin\$name"
+            Write-Host "Signing: $path"
+            signtool sign /sha1 "$env:SM_CODE_SIGNING_CERT_SHA1_HASH" `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$path"
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $path" }
+            signtool verify /pa "$path"
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $path" }
+          }
+          node scripts/download-core.mjs --verify-only
+          if ($LASTEXITCODE -ne 0) { throw "A signed atomic-chat-core binary no longer runs" }
+
       - name: Verify the cloudflared sidecar is Cloudflare's signed binary
         # cloudflared ships inside our installer with Cloudflare's own
         # Authenticode signature; we deliberately do not re-sign it (their
@@ -685,8 +770,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p src-tauri/resources/bin
-          cd src-tauri && cargo build --release --features cli --bin jan-cli
-          cp target/release/jan-cli.exe resources/bin/jan-cli.exe
+          cp src-tauri/resources/bin/atomic-chat-core.exe src-tauri/resources/bin/jan-cli.exe
 
       # Runs after Build CLI: the tauri build script requires
       # resources/bin/jan-cli.exe to exist, and `shell: bash` (-e -o pipefail)
@@ -696,6 +780,7 @@ jobs:
         timeout-minutes: 20
         shell: bash
         run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::atomic_core::lock::tests::
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::
           yarn workspace @janhq/web-app vitest --run src/lib/agent-path.test.ts src/lib/agent-file-links.test.ts src/stores/workspace-preview-store.test.ts
 
@@ -848,6 +933,337 @@ jobs:
           asset_content_type: text/plain
 
   # ──────────────────────────────────────────────────────────────
+  # Windows ARM64  (aarch64 — NSIS only, DigiCert KeyLocker code signing)
+  # Only the upstream llama.cpp engine ships here: TurboQuant, stable-diffusion.cpp
+  # and cloudflared publish no Windows arm64 build. WiX (MSI) has no arm64 support.
+  #
+  # Signing runs on x64 runners, before and after the arm64 build: the DigiCert
+  # KSP is x64-only and signtool under emulation on windows-11-arm hangs in it.
+  # Authenticode does not care which architecture the signed PE targets.
+  # ──────────────────────────────────────────────────────────────
+  sign-windows-arm64-core:
+    if: github.event_name == 'push' || inputs.build_windows_arm64
+    runs-on: windows-latest
+    timeout-minutes: 20
+    needs: create-draft-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The same checks as scripts/download-core.mjs, which picks the host's
+      # arch and cannot run an arm64 binary here.
+      - name: Download the pinned arm64 atomic-chat-core release
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $pkg.atomicCore.version
+          $base = "https://github.com/$($pkg.atomicCore.repo)/releases/download/v$version"
+          New-Item -ItemType Directory -Force -Path core | Out-Null
+          # Saved to disk: GitHub serves release assets as octet-stream, for
+          # which Invoke-WebRequest's .Content is a byte array, not text.
+          Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+          $sums = @{}
+          foreach ($line in Get-Content SHA256SUMS) {
+            if ($line.Trim() -match '^([0-9a-f]{64})\s+\*?(.+)$') { $sums[$Matches[2]] = $Matches[1] }
+          }
+          foreach ($name in @('atomic-chat-core', 'atomic-chat-app-core')) {
+            $asset = "$name-$version-aarch64-pc-windows-msvc.exe"
+            if (-not $sums.ContainsKey($asset)) { throw "$asset is not listed in SHA256SUMS" }
+            Invoke-WebRequest "$base/$asset" -OutFile "core\$name.exe"
+            $actual = (Get-FileHash "core\$name.exe" -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $sums[$asset]) { throw "$asset failed its checksum: expected $($sums[$asset]), got $actual" }
+            Write-Host "Verified $asset"
+          }
+
+      - name: Sign the arm64 atomic-chat-core binaries
+        uses: ./.github/actions/windows-code-sign
+        with:
+          path: core
+          recurse: "false"
+          sm-api-key: ${{ secrets.SM_API_KEY }}
+          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-core-signed
+          path: core/*.exe
+          retention-days: 1
+
+  build-windows-arm64:
+    if: github.event_name == 'push' || inputs.build_windows_arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    needs: [create-draft-release, sign-windows-arm64-core]
+    env:
+      TARGET: aarch64-pc-windows-msvc
+      BUNDLE_DIR: src-tauri/target/aarch64-pc-windows-msvc/release/bundle
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Native arm64 Node: download-bin / download-core pick the sidecar arch from `os.arch()`.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          architecture: arm64
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install Pillow
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cache Yarn
+        uses: actions/cache@v4
+        with:
+          path: .yarn/cache
+          key: yarn-windows-arm64-${{ hashFiles('yarn.lock') }}
+          restore-keys: yarn-windows-arm64-
+
+      # Node instead of jq: the jq action ships no Windows arm64 binary.
+      - name: Update version in project files
+        shell: bash
+        env:
+          NEW_VERSION: ${{ needs.create-draft-release.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs")
+            const v = process.env.NEW_VERSION
+            const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
+            conf.version = v
+            conf.bundle.createUpdaterArtifacts = true
+            fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(conf, null, 2) + "\n")
+            const web = JSON.parse(fs.readFileSync("web-app/package.json", "utf8"))
+            web.version = v
+            fs.writeFileSync("web-app/package.json", JSON.stringify(web, null, 2) + "\n")
+          '
+          cargo install ctoml || true
+          ctoml src-tauri/Cargo.toml package.version "$NEW_VERSION"
+
+      # ── Build (unsigned — sign-windows-arm64-installer signs it on x64) ──
+      - name: Configure Yarn
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.3 --activate
+          yarn config set -H enableImmutableInstalls false
+
+      - name: Install dependencies and build core
+        run: |
+          yarn install
+          yarn build:tauri:plugin:api
+          yarn build:core
+          yarn build:extensions
+
+      # On an arm64 host download-bin.mjs fetches the arm64 bun and uv and
+      # skips cloudflared, which has no Windows arm64 build.
+      - name: Download binaries (bun, uv)
+        run: yarn download:bin
+
+      - name: Download the pinned atomic-chat-core release
+        run: yarn download:core
+
+      - name: Use the core binaries signed on x64
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-arm64-core-signed
+          path: src-tauri/resources/bin
+
+      - name: Check the signed core binaries still run
+        run: node scripts/download-core.mjs --verify-only
+
+      - name: Download upstream llamacpp backend (manifest resolver)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Bundle the CPU build as the offline fallback; the app picks and
+          # downloads OpenCL (Adreno) or CUDA 13 arm64 at runtime.
+          DIR="src-tauri/resources/llamacpp-backend-upstream"
+          rm -rf "$DIR"
+          mkdir -p "$DIR"
+          RESOLVED="$(node scripts/resolve-upstream-backend.mjs --backend win-cpu-arm64)"
+          eval "$RESOLVED"
+          echo "$TAG" > "$DIR/version.txt"
+          echo "$BACKEND" > "$DIR/backend.txt"
+          echo "Release: $TAG  Backend: $BACKEND"
+          echo "Downloading: $URL"
+          curl -fSL --retry 5 --retry-delay 3 "$URL" -o /tmp/llamacpp-upstream-backend.zip
+          if [ -n "$SHA256" ]; then
+            ACTUAL="$(sha256sum /tmp/llamacpp-upstream-backend.zip | cut -d' ' -f1)"
+            if [ "$ACTUAL" != "$SHA256" ]; then
+              echo "Error: sha256 mismatch for $ASSET (expected $SHA256, got $ACTUAL)"
+              exit 1
+            fi
+            echo "sha256 verified: $ASSET"
+          else
+            echo "No sha256 published for $ASSET; skipping integrity check"
+          fi
+          unzip -o /tmp/llamacpp-upstream-backend.zip -d "$DIR"
+          rm -f /tmp/llamacpp-upstream-backend.zip
+          if [ ! -f "$DIR/build/bin/llama-server.exe" ] && [ -f "$DIR/llama-server.exe" ]; then
+            echo "Relocating flat-extracted binaries into build/bin/..."
+            mkdir -p "$DIR/build/bin"
+            find "$DIR" -maxdepth 1 -type f ! -name version.txt ! -name backend.txt -exec mv {} "$DIR/build/bin/" \;
+          fi
+          if [ ! -f "$DIR/build/bin/llama-server-impl.dll" ]; then
+            echo "Error: upstream backend is missing build/bin/llama-server-impl.dll"
+            exit 1
+          fi
+          echo "CPU backend ($BACKEND) downloaded successfully."
+
+      - name: Build web app and generate icons
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: ${{ github.sha }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT_FRONTEND: ${{ secrets.SENTRY_PROJECT_FRONTEND }}
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          yarn build:web
+          yarn build:icon
+
+      - name: Copy assets to Tauri
+        run: yarn copy:assets:tauri
+
+      - name: Build CLI
+        shell: bash
+        run: |
+          mkdir -p src-tauri/resources/bin
+          cp src-tauri/resources/bin/atomic-chat-core.exe src-tauri/resources/bin/jan-cli.exe
+
+      - name: Build app (unsigned)
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4196"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          SENTRY_DSN_DESKTOP: ${{ secrets.SENTRY_DSN_DESKTOP }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: ${{ github.sha }}
+        run: yarn tauri build --target aarch64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-arm64.conf.json
+
+      - name: Upload Rust debug files to Sentry (Windows ARM64)
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT_DESKTOP: ${{ secrets.SENTRY_PROJECT_DESKTOP }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ] || [ -z "$SENTRY_ORG" ] || [ -z "$SENTRY_PROJECT_DESKTOP" ]; then
+            echo "Sentry secrets absent — skipping debug-file upload."
+            exit 0
+          fi
+          npx @sentry/cli@^2 debug-files upload \
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT_DESKTOP" \
+            src-tauri/target/aarch64-pc-windows-msvc/release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-nsis-unsigned
+          path: ${{ env.BUNDLE_DIR }}/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-windows-arm64-installer:
+    if: github.event_name == 'push' || inputs.build_windows_arm64
+    runs-on: windows-latest
+    timeout-minutes: 20
+    needs: [create-draft-release, build-windows-arm64]
+    outputs:
+      win_sig: ${{ steps.metadata.outputs.win_sig }}
+      exe_name: ${{ steps.metadata.outputs.exe_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-arm64-nsis-unsigned
+          path: nsis
+
+      - name: Sign Windows ARM64 installer with DigiCert
+        uses: ./.github/actions/windows-code-sign
+        with:
+          path: nsis
+          recurse: "false"
+          sm-api-key: ${{ secrets.SM_API_KEY }}
+          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The CLI version matches yarn.lock, so the .sig is what `yarn tauri` would write.
+      - name: Recreate updater signature after code signing
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for exe in nsis/*-setup.exe; do
+            [ -f "$exe" ] || continue
+            rm -f "${exe}.sig"
+            npx --yes @tauri-apps/cli@2.8.4 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$exe"
+            echo "Created new .sig for: $(basename "$exe")"
+          done
+
+      - name: Collect artifact metadata
+        id: metadata
+        shell: bash
+        run: |
+          cd nsis
+          EXE_NAME=$(ls *.exe | head -1)
+          WIN_SIG=$(cat "${EXE_NAME}.sig" 2>/dev/null || echo "")
+          echo "exe_name=${EXE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "win_sig=${WIN_SIG}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload NSIS installer to release
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-draft-release.outputs.upload_url }}
+          asset_path: ./nsis/${{ steps.metadata.outputs.exe_name }}
+          asset_name: ${{ steps.metadata.outputs.exe_name }}
+          asset_content_type: application/octet-stream
+
+      - name: Upload NSIS updater signature to release
+        if: steps.metadata.outputs.win_sig != ''
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-draft-release.outputs.upload_url }}
+          asset_path: ./nsis/${{ steps.metadata.outputs.exe_name }}.sig
+          asset_name: ${{ steps.metadata.outputs.exe_name }}.sig
+          asset_content_type: text/plain
+
+  # ──────────────────────────────────────────────────────────────
   # Linux  (x86_64 — AppImage, upstream ggml-org/llama.cpp, CPU-only bundled)
   # ──────────────────────────────────────────────────────────────
   build-linux-x64:
@@ -960,6 +1376,9 @@ jobs:
       - name: Download binaries (bun, uv, cloudflared, sqlite-vec)
         run: yarn download:bin
 
+      - name: Download the pinned atomic-chat-core release
+        run: yarn download:core
+
       - name: Assert the cloudflared sidecar was bundled
         # download-bin.mjs fails the step on a sha256 mismatch, so reaching
         # this point means the file was verified. This only guards against
@@ -1032,9 +1451,8 @@ jobs:
       - name: Build CLI (Linux)
         run: |
           mkdir -p src-tauri/resources/bin
-          cd src-tauri && cargo build --release --features cli --bin jan-cli
-          cp target/release/jan-cli resources/bin/jan-cli
-          chmod +x resources/bin/jan-cli
+          cp src-tauri/resources/bin/atomic-chat-core src-tauri/resources/bin/jan-cli
+          chmod +x src-tauri/resources/bin/jan-cli
 
       # The agent's pty/process contract is Unix-only (see contract_tests.rs):
       # ConPTY never EOFs the output pipe on child exit, so those cases cannot
@@ -1044,6 +1462,7 @@ jobs:
       - name: Gate Agent checks (Linux)
         timeout-minutes: 20
         run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::atomic_core::lock::tests::
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::
 
       - name: Build app (AppImage)
@@ -1162,9 +1581,9 @@ jobs:
   publish-latest-json:
     if: |
       always() && needs.create-draft-release.result == 'success' &&
-      (needs.build-macos.result == 'success' || needs.build-windows.result == 'success' || needs.build-linux-x64.result == 'success')
+      (needs.build-macos.result == 'success' || needs.build-windows.result == 'success' || needs.sign-windows-arm64-installer.result == 'success' || needs.build-linux-x64.result == 'success')
     runs-on: ubuntu-latest
-    needs: [create-draft-release, build-macos, build-windows, build-linux-x64]
+    needs: [create-draft-release, build-macos, build-windows, sign-windows-arm64-installer, build-linux-x64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1178,6 +1597,9 @@ jobs:
           WIN_SIG: ${{ needs.build-windows.outputs.win_sig }}
           EXE_NAME: ${{ needs.build-windows.outputs.exe_name }}
           WIN_RESULT: ${{ needs.build-windows.result }}
+          WIN_ARM_SIG: ${{ needs.sign-windows-arm64-installer.outputs.win_sig }}
+          WIN_ARM_EXE_NAME: ${{ needs.sign-windows-arm64-installer.outputs.exe_name }}
+          WIN_ARM_RESULT: ${{ needs.sign-windows-arm64-installer.result }}
           LINUX_SIG: ${{ needs.build-linux-x64.outputs.linux_sig }}
           APPIMAGE_NAME: ${{ needs.build-linux-x64.outputs.appimage_name }}
           LINUX_RESULT: ${{ needs.build-linux-x64.result }}
@@ -1185,6 +1607,7 @@ jobs:
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
           DARWIN_URL="https://github.com/AtomicBot-ai/Atomic-Chat/releases/download/v${VERSION}/${TAR_NAME// /.}"
           WIN_URL="https://github.com/AtomicBot-ai/Atomic-Chat/releases/download/v${VERSION}/${EXE_NAME// /.}"
+          WIN_ARM_URL="https://github.com/AtomicBot-ai/Atomic-Chat/releases/download/v${VERSION}/${WIN_ARM_EXE_NAME// /.}"
           LINUX_URL="https://github.com/AtomicBot-ai/Atomic-Chat/releases/download/v${VERSION}/${APPIMAGE_NAME// /.}"
 
           # Fill in the platform blocks only for jobs that actually
@@ -1196,10 +1619,13 @@ jobs:
              --arg darwin_url "$DARWIN_URL" \
              --arg win_sig "$WIN_SIG" \
              --arg win_url "$WIN_URL" \
+             --arg win_arm_sig "$WIN_ARM_SIG" \
+             --arg win_arm_url "$WIN_ARM_URL" \
              --arg linux_sig "$LINUX_SIG" \
              --arg linux_url "$LINUX_URL" \
              --arg mac_result "$MAC_RESULT" \
              --arg win_result "$WIN_RESULT" \
+             --arg win_arm_result "$WIN_ARM_RESULT" \
              --arg linux_result "$LINUX_RESULT" \
              '.version = $version
               | .pub_date = $pub_date
@@ -1217,6 +1643,12 @@ jobs:
                   | .platforms["windows-x86_64"].url = $win_url
                 else
                   del(.platforms["windows-x86_64"])
+                end)
+              | (if $win_arm_result == "success" then
+                  .platforms["windows-aarch64"].signature = $win_arm_sig
+                  | .platforms["windows-aarch64"].url = $win_arm_url
+                else
+                  del(.platforms["windows-aarch64"])
                 end)
               | (if $linux_result == "success" then
                   .platforms["linux-x86_64"].signature = $linux_sig
@@ -1237,3 +1669,52 @@ jobs:
           asset_path: ./latest.json
           asset_name: latest.json
           asset_content_type: application/json
+
+  notify-finish:
+    if: always()
+    runs-on: ubuntu-latest
+    needs: [create-draft-release, build-macos, build-windows, sign-windows-arm64-core, build-windows-arm64, sign-windows-arm64-installer, build-linux-x64, publish-latest-json]
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Notify Telegram that the release finished
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        continue-on-error: true
+        env:
+          VERSION: ${{ needs.create-draft-release.outputs.version }}
+          RELEASE_URL: ${{ needs.create-draft-release.outputs.release_url }}
+          DRAFT_RESULT: ${{ needs.create-draft-release.result }}
+          MAC_RESULT: ${{ needs.build-macos.result }}
+          WIN_RESULT: ${{ needs.build-windows.result }}
+          # The first ARM64 job that did not succeed, else the installer signing result.
+          WIN_ARM_RESULT: ${{ needs.sign-windows-arm64-core.result != 'success' && needs.sign-windows-arm64-core.result || needs.build-windows-arm64.result != 'success' && needs.build-windows-arm64.result || needs.sign-windows-arm64-installer.result }}
+          LINUX_RESULT: ${{ needs.build-linux-x64.result }}
+          LATEST_JSON_RESULT: ${{ needs.publish-latest-json.result }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              failure) echo "❌" ;;
+              cancelled) echo "⏹" ;;
+              *) echo "⏭" ;;
+            esac
+          }
+          results="$DRAFT_RESULT $MAC_RESULT $WIN_RESULT $WIN_ARM_RESULT $LINUX_RESULT $LATEST_JSON_RESULT"
+          case "$results" in
+            *failure*) head="❌ <b>Atomic Chat v$VERSION</b>: сборка упала" ;;
+            *cancelled*) head="⏹ <b>Atomic Chat v$VERSION</b>: сборка отменена" ;;
+            *) head="✅ <b>Atomic Chat v$VERSION</b>: сборка завершена" ;;
+          esac
+          links="<a href=\"$run_url\">Билд</a>"
+          [ -n "$RELEASE_URL" ] && links="$links · <a href=\"$RELEASE_URL\">Draft-релиз</a>"
+          text="$(printf '%s\n' \
+            "$head" \
+            "$(icon "$MAC_RESULT") macOS  $(icon "$WIN_RESULT") Windows  $(icon "$WIN_ARM_RESULT") Windows-ARM64  $(icon "$LINUX_RESULT") Linux" \
+            "$(icon "$LATEST_JSON_RESULT") latest.json (автообновление)" \
+            "$links")"
+          curl -fsS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+            --data-urlencode "text=$text" \
+            -d parse_mode=HTML -d disable_web_page_preview=true > /dev/null

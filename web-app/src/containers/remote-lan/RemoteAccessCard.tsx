@@ -18,7 +18,7 @@ export function RemoteAccessCard({ remote }: { remote: RemoteAccessView }) {
   const { t } = useTranslation()
 
   return (
-    <section aria-label={t('settings:remoteLan.remote.title')}>
+    <section className="flex" aria-label={t('settings:remoteLan.remote.title')}>
       <Card
         header={
           <AccessCardHeader

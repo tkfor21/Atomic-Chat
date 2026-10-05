@@ -25,6 +25,7 @@
   "hub": "ハブ",
   "models": "モデル",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "ヘルプとサポート",
   "helpUsImproveJan": "Atomic Botの改善にご協力ください",
@@ -581,5 +582,12 @@
     "body": "接続中のコネクター（{{servers}}）は毎回のリクエストにツール定義を追加するため、ローカルモデルの応答が遅くなります。このチャットで不要なものはオフにしてください。",
     "mute": "このチャットで {{server}} をオフにする",
     "dismiss": "このままにする"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "モデルをダウンロードしました",
+    "modelReadyBody": "{{name}} を使用できます。",
+    "engineReadyTitle": "エンジンをインストールしました",
+    "chatEngineReadyBody": "llama.cpp でモデルを実行できます。",
+    "mediaEngineReadyBody": "画像・動画エンジンの準備ができました。"
   }
 }

@@ -7,12 +7,15 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
+  type ReactNode,
 } from 'react'
-import { IconSearch } from '@tabler/icons-react'
 import { Loader } from 'lucide-react'
 import HeaderPage from '@/containers/HeaderPage'
+import { DecisionHub } from '@/containers/hub/DecisionHub'
+import { HubCategorySelect } from '@/containers/hub/HubCategorySelect'
 import { HubFilters } from '@/containers/hub/HubFilters'
+import { HubNoResults, HubSearchInput } from '@/containers/hub/HubSearch'
+import { MediaHub } from '@/containers/hub/MediaHub'
 import { ModelDetailPanel } from '@/containers/hub/ModelDetailPanel'
 import { ModelListRow } from '@/containers/hub/ModelListRow'
 import { RECOMMENDED_MODEL_FALLBACKS } from '@/constants/models'
@@ -41,12 +44,22 @@ import {
 import {
   collectInstalledModels,
   filterInstalledBySearch,
+  withStaffPicks,
 } from '@/lib/hub-installed'
+import { isDecisionHostSupported } from '@/lib/decision/platform'
+import {
+  HUB_CATEGORIES,
+  isHubCategory,
+  type HubCategory,
+} from '@/lib/hub-media'
 import { getMemoryBudgetBytes } from '@/lib/model-card'
 import { extractModelName } from '@/lib/models'
+import { PlatformFeatures } from '@/lib/platform/const'
+import { PlatformFeature } from '@/lib/platform/types'
 import { cn } from '@/lib/utils'
 import { getModelSearchService } from '@/services/model-search'
 import { useModelCatalogStore } from '@/stores/model-catalog-store'
+import type { DiffusionModality } from '@/services/diffusion/types'
 import type { CatalogModel, HuggingFaceFeedSort } from '@/services/models/types'
 import type {
   StaffPick,
@@ -59,8 +72,14 @@ type SearchParams = {
   repo?: string
   engine?: 'mlx' | 'gguf'
   q?: string
-  /** Repo id of the model shown in the right-hand detail panel. */
+  /**
+   * Repo id of the model shown in the right-hand detail panel; in the Images
+   * and Video categories, the id of the catalog family; in Decision, the
+   * catalog id of the model.
+   */
   model?: string
+  /** Absent means Chat: every link into the Hub from a chat asks for one. */
+  category?: HubCategory
 }
 
 /** A row in the left column, plus the provenance the row needs to render. */
@@ -116,6 +135,7 @@ export const Route = createFileRoute(route.hub.index as any)({
         : undefined,
     q: typeof search.q === 'string' ? search.q : undefined,
     model: typeof search.model === 'string' ? search.model : undefined,
+    category: isHubCategory(search.category) ? search.category : undefined,
   }),
 })
 
@@ -124,6 +144,166 @@ export const Route = createFileRoute(route.hub.index as any)({
 const hubScrollCache: { q: string; offset: number } = { q: '', offset: 0 }
 
 function HubContent() {
+  const navigate = useNavigate()
+  const { category: categorySearchParam } = Route.useSearch()
+  const decisionApiSupported = useServiceHub().decision().isSupported()
+  const cpuArch = useHardware((s) => s.hardwareData.cpu.arch)
+  // Image and video models need the local media engine, decision models a
+  // TurboQuant build for this machine; with neither the Hub stays the chat
+  // catalog it always was, switch and all.
+  const mediaSupported = PlatformFeatures[PlatformFeature.MEDIA_GENERATION]
+  const decisionSupported =
+    PlatformFeatures[PlatformFeature.LOCAL_INFERENCE] &&
+    decisionApiSupported &&
+    isDecisionHostSupported(cpuArch)
+  const categories = useMemo(
+    () =>
+      HUB_CATEGORIES.filter((c) =>
+        c === 'decision'
+          ? decisionSupported
+          : c === 'chat' || mediaSupported
+      ),
+    [mediaSupported, decisionSupported]
+  )
+  const category: HubCategory =
+    categorySearchParam && categories.includes(categorySearchParam)
+      ? categorySearchParam
+      : 'chat'
+
+  const changeCategory = useCallback(
+    (next: HubCategory) => {
+      void navigate({
+        to: route.hub.index,
+        // The selection belongs to the category it was made in.
+        search: (prev: SearchParams) => ({
+          ...prev,
+          category: next === 'chat' ? undefined : next,
+          model: undefined,
+          repo: undefined,
+        }),
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  const categoryTabs =
+    categories.length > 1 ? (
+      <HubCategorySelect
+        categories={categories}
+        value={category}
+        onChange={changeCategory}
+      />
+    ) : undefined
+
+  if (category === 'chat') return <ChatHub categoryTabs={categoryTabs} />
+  if (category === 'decision') {
+    return <DecisionHubContent categoryTabs={categoryTabs} />
+  }
+  return (
+    <MediaHubContent
+      key={category}
+      modality={category}
+      categoryTabs={categoryTabs}
+    />
+  )
+}
+
+function DecisionHubContent({ categoryTabs }: { categoryTabs?: ReactNode }) {
+  const navigate = useNavigate()
+  const { q: querySearchParam, model: modelSearchParam } = Route.useSearch()
+  const [query, setQuery] = useState(querySearchParam ?? getHubSearchQuery())
+
+  const changeQuery = useCallback(
+    (next: string) => {
+      setQuery(next)
+      setHubSearchQuery(next)
+      void navigate({
+        to: route.hub.index,
+        search: (prev: SearchParams) => ({
+          ...prev,
+          q: next.trim() || undefined,
+        }),
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  const selectModel = useCallback(
+    (modelId: string, options?: { replace?: boolean }) => {
+      void navigate({
+        to: route.hub.index,
+        search: (prev: SearchParams) => ({ ...prev, model: modelId }),
+        replace: options?.replace ?? false,
+      })
+    },
+    [navigate]
+  )
+
+  return (
+    <DecisionHub
+      categoryTabs={categoryTabs}
+      query={query}
+      onQueryChange={changeQuery}
+      selectedModelId={modelSearchParam ?? null}
+      onSelectModel={selectModel}
+    />
+  )
+}
+
+function MediaHubContent({
+  modality,
+  categoryTabs,
+}: {
+  modality: DiffusionModality
+  categoryTabs?: ReactNode
+}) {
+  const navigate = useNavigate()
+  const { q: querySearchParam, model: modelSearchParam } = Route.useSearch()
+  // One search box for every category: switching keeps what was typed.
+  const [query, setQuery] = useState(querySearchParam ?? getHubSearchQuery())
+
+  const changeQuery = useCallback(
+    (next: string) => {
+      setQuery(next)
+      setHubSearchQuery(next)
+      void navigate({
+        to: route.hub.index,
+        search: (prev: SearchParams) => ({
+          ...prev,
+          q: next.trim() || undefined,
+        }),
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  const selectFamily = useCallback(
+    (familyId: string, options?: { replace?: boolean }) => {
+      void navigate({
+        to: route.hub.index,
+        search: (prev: SearchParams) => ({ ...prev, model: familyId }),
+        replace: options?.replace ?? false,
+      })
+    },
+    [navigate]
+  )
+
+  return (
+    <MediaHub
+      modality={modality}
+      categoryTabs={categoryTabs}
+      query={query}
+      onQueryChange={changeQuery}
+      selectedFamilyId={modelSearchParam ?? null}
+      onSelectFamily={selectFamily}
+    />
+  )
+}
+
+function ChatHub({ categoryTabs }: { categoryTabs?: ReactNode }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const serviceHub = useServiceHub()
@@ -312,10 +492,19 @@ function HubContent() {
   //
   // Reading `providers` reactively (rather than via `getState()`) is what makes
   // a downloaded/deleted model appear or vanish immediately (ATO-180).
+  //
+  // The staff picks claim their downloads too: onboarding offers picks the
+  // catalog does not index, and the Hub must recognise the file it fetched.
+  const installedCatalog = useMemo(
+    () => withStaffPicks(sources, staffPickModels),
+    [sources, staffPickModels]
+  )
   const installedModels = useMemo(
     () =>
-      showOnlyDownloaded ? collectInstalledModels(sources, providers) : [],
-    [showOnlyDownloaded, sources, providers]
+      showOnlyDownloaded
+        ? collectInstalledModels(installedCatalog, providers)
+        : [],
+    [showOnlyDownloaded, installedCatalog, providers]
   )
 
   const installedResults = useMemo(
@@ -509,7 +698,12 @@ function HubContent() {
           (model) => uncensoredFeed.details.get(model.model_name) ?? model
         )
       : []
-    const tailSource = filters.uncensored ? pagedUncensored : hfCandidates
+    // A search hit carries no file list, so the detail panel has nothing to
+    // offer for download until the card fetched for the selected row replaces
+    // it — the same swap the feed and the uncensored listing make.
+    const tailSource = filters.uncensored
+      ? pagedUncensored
+      : hfCandidates.map((model) => feed.details.get(model.model_name) ?? model)
     const tail = tailSource.filter((candidate) => {
       if (
         seen.has(candidate.model_name) ||
@@ -664,8 +858,7 @@ function HubContent() {
     })
   }, [debouncedSearchValue, querySearchParam, navigate])
 
-  const handleSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const next = event.target.value
+  const handleSearchChange = (next: string) => {
     setIsSearching(false)
     setSearchValue(next)
     setHubSearchQuery(next)
@@ -800,24 +993,18 @@ function HubContent() {
             ? { 'data-tauri-drag-region': true }
             : {})}
         >
-          {isSearching || hfSearching ? (
-            <Loader className="size-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <IconSearch className="shrink-0 text-muted-foreground" size={14} />
-          )}
-          <input
-            placeholder={t('hub:searchPlaceholder')}
+          <HubSearchInput
             value={searchValue}
             onChange={handleSearchChange}
-            autoComplete="off"
-            aria-label={t('hub:searchPlaceholder')}
-            className="hub-models-search-input w-full min-w-0 flex-1 bg-transparent bg-clip-padding text-foreground shadow-none transition-none animate-none placeholder:text-muted-foreground focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            placeholder={t('hub:searchPlaceholder')}
+            busy={isSearching || hfSearching}
           />
         </div>
       </HeaderPage>
 
       <div className="col-start-1 row-start-2 flex min-h-0 min-w-0 flex-col border-r border-border">
         <div className="flex flex-col gap-2 border-b border-border p-3">
+          {categoryTabs}
           <HubFilters
             state={filters}
             onChange={updateFilters}
@@ -842,11 +1029,18 @@ function HubContent() {
               ))}
             </div>
           ) : isEmpty ? (
-            <p className="p-4 text-center text-sm text-muted-foreground">
-              {!isSearchMode && filters.onlyFitting
-                ? t('hub:noFittingPicks')
-                : t('hub:noModels')}
-            </p>
+            <HubNoResults
+              message={
+                !isSearchMode && filters.onlyFitting
+                  ? t('hub:noFittingPicks')
+                  : t('hub:noModels')
+              }
+              onClearSearch={
+                searchValue.length > 0
+                  ? () => handleSearchChange('')
+                  : undefined
+              }
+            />
           ) : (
             <div
               style={{

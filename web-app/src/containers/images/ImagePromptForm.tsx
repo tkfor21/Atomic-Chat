@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useState,
   type KeyboardEvent,
   type ReactNode,
@@ -10,7 +11,6 @@ import { useNavigate } from '@tanstack/react-router'
 import {
   IconChevronDown,
   IconChevronRight,
-  IconRestore,
   IconSettings,
 } from '@tabler/icons-react'
 import { useShallow } from 'zustand/shallow'
@@ -30,11 +30,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
 import { route } from '@/constants/routes'
 import {
   MAX_IMAGE_BATCH,
@@ -53,12 +48,19 @@ import {
 } from '@/hooks/useImageSetting'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import type { DimConstraints } from '@/lib/diffusion/size'
-import { workflowSpec } from '@/lib/diffusion/workflows'
+import {
+  IMAGE_WORKFLOWS,
+  workflowPath,
+  workflowSpec,
+} from '@/lib/diffusion/workflows'
 import { cn } from '@/lib/utils'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
 import { ImageField, ImageFieldHint } from './ImageField'
 import { ImageApiSettingsCard } from './ImageApiSettingsCard'
 import { ImageWorkflowInputs } from './ImageWorkflowInputs'
+import { MediaModeSelect } from './MediaModeSelect'
+import { MediaSettingsHeading } from './MediaSettingsHeading'
+import { MediaPageHeading } from './MediaPageHeading'
 import { WORKFLOW_ICONS } from './workflowIcons'
 import { ImageGenerateButton } from './ImageGenerateButton'
 import { ImageModelPicker } from './ImageModelPicker'
@@ -114,7 +116,7 @@ export const ImagePromptForm = memo(function ImagePromptForm({
       workflow: state.workflow,
       patch: state.patch,
       resetToDefaults: state.resetToDefaults,
-      clampTo: state.clampTo,
+      adoptModel: state.adoptModel,
     }))
   )
   const {
@@ -147,20 +149,24 @@ export const ImagePromptForm = memo(function ImagePromptForm({
     }))
   )
   const engine = useImageEngine()
-  const capabilities = useImageGenerationStore((state) => state.capabilities)
   const applyIdleSettings = useImageGenerationStore(
     (state) => state.applyIdleSettings
   )
   const generation = useImageGeneration()
+  // The picked model's, known from the catalog before it starts: the
+  // controls it needs are there at once and do not appear on load.
+  const { capabilities, targetFamilyId } = generation
   const [internalModelsOpen, setInternalModelsOpen] = useState(false)
   const modelsOpen = controlledModelsOpen ?? internalModelsOpen
   const setModelsOpen = onModelsOpenChange ?? setInternalModelsOpen
 
-  // A model just loaded: fold the draft into what it accepts.
+  // A model was picked or loaded: the draft becomes its. Starting the
+  // picked model changes nothing the user set, only the model's report.
   useEffect(() => {
-    if (capabilities) form.clampTo(capabilities)
+    if (targetFamilyId && capabilities)
+      form.adoptModel(targetFamilyId, capabilities)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capabilities])
+  }, [targetFamilyId, capabilities])
 
   const constraints: DimConstraints = capabilities
     ? {
@@ -181,7 +187,16 @@ export const ImagePromptForm = memo(function ImagePromptForm({
   const showGuidance = capabilities?.supportsGuidance ?? false
   const busy = generation.generating
   const spec = workflowSpec(form.workflow)
-  const WorkflowIcon = WORKFLOW_ICONS[form.workflow]
+  const modes = useMemo(
+    () =>
+      IMAGE_WORKFLOWS.map(({ id }) => ({
+        id,
+        icon: WORKFLOW_ICONS[id],
+        title: t(`images:workflow.${id}.title`),
+        hint: t(`images:workflow.${id}.hint`),
+      })),
+    [t]
+  )
   const isEdit = form.workflow === 'edit'
   const idleLabel = (minutes: number) =>
     minutes === 0
@@ -241,38 +256,22 @@ export const ImagePromptForm = memo(function ImagePromptForm({
         className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-6 pt-4 pb-4 [scrollbar-gutter:stable]"
         data-testid="image-form-scroller"
       >
-        {/* The sidebar names the section; this names what the column does. */}
-        <div className="mb-1 flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <h2
-              className="flex items-center gap-2 font-studio text-xl font-medium leading-none"
-              data-testid="image-workflow-title"
-            >
-              <WorkflowIcon size={18} className="shrink-0" />
-              {t(`images:workflow.${form.workflow}.title`)}
-            </h2>
-            <p className="text-xs leading-snug text-muted-foreground">
-              {t(`images:workflow.${form.workflow}.hint`)}
-            </p>
-          </div>
-          {capabilities && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  disabled={busy}
-                  aria-label={t('images:form.reset')}
-                  onClick={() => form.resetToDefaults(capabilities.defaults)}
-                >
-                  <IconRestore size={16} />
-                  <span className="sr-only">{t('images:form.reset')}</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('images:form.resetHint')}</TooltipContent>
-            </Tooltip>
-          )}
+        {/* The sidebar and the heading name the section; the Mode field
+            under them picks what the column does. */}
+        <div className="flex flex-col gap-4">
+          <MediaPageHeading
+            title={t('images:page.title')}
+            subtitle={t('images:page.subtitle')}
+            testIdPrefix="image"
+          />
+          {/* The route stays the source of truth, so a pick navigates. */}
+          <MediaModeSelect
+            modes={modes}
+            value={form.workflow}
+            onChange={(id) => navigate({ to: workflowPath(id) })}
+            label={t('images:workflow.choose')}
+            testIdPrefix="image"
+          />
         </div>
 
         <ImageWorkflowInputs
@@ -355,6 +354,20 @@ export const ImagePromptForm = memo(function ImagePromptForm({
             </CollapsibleContent>
           </Collapsible>
         )}
+
+        {/* Reset sits over what it puts back; the prompts stay. */}
+        <MediaSettingsHeading
+          label={t('common:settings')}
+          resetLabel={t('images:form.reset')}
+          resetHint={t('images:form.resetHint')}
+          onReset={
+            capabilities
+              ? () => form.resetToDefaults(capabilities.defaults)
+              : undefined
+          }
+          disabled={busy}
+          testIdPrefix="image"
+        />
 
         {/* Inpaint, extend, upscale and edit take their size from the
             source; a size control there would be a knob that does nothing. */}
@@ -557,8 +570,8 @@ type AdvancedSelectProps<T extends string | number> = {
   onChange: (value: T) => void
 }
 
-/** One Advanced row: a muted label on the left, a pill menu on the right. */
-function AdvancedSelect<T extends string | number>({
+/** One Advanced row: a muted label on the left, a pill menu on the right. Shared with the Video form. */
+export function AdvancedSelect<T extends string | number>({
   label,
   hint,
   value,

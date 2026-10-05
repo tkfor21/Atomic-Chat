@@ -27,6 +27,7 @@
   "hub": "Centrum",
   "models": "Modely",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Nápověda a podpora",
   "helpUsImproveJan": "Pomozte nám vylepšit Atomic Bot",
@@ -393,5 +394,12 @@
     "title": "Pluginy",
     "emptySkills": "Zatím žádné dovednosti",
     "manageSkills": "Spravovat dovednosti"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Model stažen",
+    "modelReadyBody": "{{name}} je připraven k použití.",
+    "engineReadyTitle": "Engine nainstalován",
+    "chatEngineReadyBody": "llama.cpp je připraven spouštět modely.",
+    "mediaEngineReadyBody": "Engine pro obrázky a video je připraven."
   }
 }

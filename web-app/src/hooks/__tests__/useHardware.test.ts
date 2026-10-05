@@ -366,6 +366,55 @@ describe('useHardware', () => {
     })
   })
 
+  describe('setHardwareData with the core fields', () => {
+    it('keeps source, probed_at and extensions_known as the core answered them', () => {
+      const { result } = renderHook(() => useHardware())
+
+      const hardwareData: HardwareData = {
+        cpu: {
+          arch: 'x86_64',
+          core_count: 4,
+          extensions: [],
+          extensions_known: false,
+          name: 'CPU',
+          usage: 0,
+        },
+        gpus: [],
+        os_type: 'linux',
+        os_name: 'Ubuntu 24.04',
+        total_memory: 16384,
+        source: 'override',
+        probed_at: 1_760_000_000_000,
+      }
+
+      act(() => {
+        result.current.setHardwareData(hardwareData)
+      })
+
+      expect(result.current.hardwareData.source).toBe('override')
+      expect(result.current.hardwareData.probed_at).toBe(1_760_000_000_000)
+      expect(result.current.hardwareData.cpu.extensions_known).toBe(false)
+      expect(result.current.hardwareReady).toBe(true)
+    })
+
+    it('leaves source and probed_at undefined when the facts carry none', () => {
+      const { result } = renderHook(() => useHardware())
+
+      act(() => {
+        result.current.setHardwareData({
+          cpu: { arch: '', core_count: 0, extensions: [], name: '', usage: 0 },
+          gpus: [],
+          os_type: 'macos',
+          os_name: 'macOS',
+          total_memory: 0,
+        })
+      })
+
+      expect(result.current.hardwareData.source).toBeUndefined()
+      expect(result.current.hardwareData.probed_at).toBeUndefined()
+    })
+  })
+
   describe('setHardwareData with GPU activation', () => {
     it('should initialize GPUs as inactive when activated is not specified', () => {
       const { result } = renderHook(() => useHardware())

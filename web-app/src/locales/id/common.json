@@ -27,6 +27,7 @@
   "hub": "Hub",
   "models": "Model",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "helpSupport": "Bantuan & Dukungan",
   "helpUsImproveJan": "Bantu Kami Meningkatkan Atomic Bot",
@@ -393,5 +394,12 @@
     "title": "Plugin",
     "emptySkills": "Belum ada keahlian",
     "manageSkills": "Kelola keahlian"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "Model diunduh",
+    "modelReadyBody": "{{name}} siap digunakan.",
+    "engineReadyTitle": "Mesin terpasang",
+    "chatEngineReadyBody": "llama.cpp siap menjalankan model.",
+    "mediaEngineReadyBody": "Mesin gambar dan video sudah siap."
   }
 }

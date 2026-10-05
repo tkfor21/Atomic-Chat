@@ -283,13 +283,18 @@ const bucket = (
  *    signal a Mac gives us. Reaching the VRAM branch would read 0 MiB and
  *    classify a 128 GiB M3 Max as the weakest tier. Intel Macs take this branch
  *    too — they report no GPU either.
- * 2. **An accelerator was enumerated → budget on the largest one.** This is
- *    where integrated graphics land as well, which is intended: an iGPU with
- *    2 GiB carved out is a real constraint, not a rounding error.
- * 3. **ARM without a GPU** — Windows-on-ARM and ARM Linux are unified-memory
- *    designs like Apple Silicon, so they get the same buckets. The ceiling
- *    stays soft: they are not going through Metal.
- * 4. **x86 without any GPU → `cpu_only`, regardless of how much RAM there is.**
+ * 2. **Windows on ARM → unified memory, even with a GPU enumerated.** Its GPUs
+ *    are integrated (Snapdragon Adreno, NVIDIA RTX Spark N1X) and report only
+ *    the dedicated carveout — ~512 MiB for Adreno, NVML's dedicated figure for
+ *    N1X — while llama.cpp allocates from the shared pool as well. Budgeting
+ *    on the carveout would put a 64 GiB laptop on `vram_2`.
+ * 3. **An accelerator was enumerated → budget on the largest one.** This is
+ *    where x86 integrated graphics land as well, which is intended: an iGPU
+ *    with 2 GiB carved out is a real constraint, not a rounding error.
+ * 4. **ARM without a GPU** — ARM Linux is a unified-memory design like Apple
+ *    Silicon, so it gets the same buckets. The ceiling stays soft: it is not
+ *    going through Metal.
+ * 5. **x86 without any GPU → `cpu_only`, regardless of how much RAM there is.**
  *    The old code called this "low spec" and picked by RAM, which is what gave
  *    a 128 GiB workstation an 8 GiB laptop's recommendation. RAM is not the
  *    binding constraint here — CPU token throughput is, and it does not improve
@@ -315,7 +320,19 @@ export function describeHardware(
     }
   }
 
-  // 2. A real accelerator was enumerated (discrete or integrated).
+  // 2. Windows on ARM — integrated GPU over a shared pool, budget on RAM.
+  if (hw.os_type === 'windows' && isArmArch(hw.cpu?.arch) && ram > 0) {
+    return {
+      tier: bucket(ram, UNIFIED_TIER_BOUNDS, 'unified_128_plus'),
+      memoryKind: 'unified',
+      budgetMib: ram,
+      systemRamMib: ram,
+      vramMib: vram,
+      hardCeiling: false,
+    }
+  }
+
+  // 3. A real accelerator was enumerated (discrete or integrated).
   if (vram > 0) {
     return {
       tier: bucket(vram, VRAM_TIER_BOUNDS, 'vram_128_plus'),
@@ -330,7 +347,7 @@ export function describeHardware(
   // Nothing reported at all — hardware detection has not run yet.
   if (ram <= 0) return null
 
-  // 3. ARM without a discrete GPU: unified memory, same buckets as macOS.
+  // 4. ARM without a discrete GPU: unified memory, same buckets as macOS.
   if (isArmArch(hw.cpu?.arch)) {
     return {
       tier: bucket(ram, UNIFIED_TIER_BOUNDS, 'unified_128_plus'),
@@ -342,7 +359,7 @@ export function describeHardware(
     }
   }
 
-  // 4. x86 with no accelerator at all.
+  // 5. x86 with no accelerator at all.
   return {
     tier: 'cpu_only',
     memoryKind: 'system',

@@ -112,6 +112,29 @@ export function sizeBucket(bytes?: number | null): string {
   return 'gt_50gb'
 }
 
+/**
+ * Average speed of one download run, in bytes per second, from the first byte
+ * count the run reported to the last. Null when the run moved too little, or
+ * for too short a time, to say anything.
+ *
+ * Field feedback, 2026-09-29, was "2 GB shows an hour": the terminal event
+ * carried a duration but no size and no speed, so how slow downloads really
+ * are could not be read off telemetry at all.
+ */
+export function averageBytesPerSecond(
+  transfer?: {
+    current: number
+    transferStart?: { bytes: number; time: number }
+  } | null,
+  now = Date.now()
+): number | null {
+  if (!transfer?.transferStart) return null
+  const elapsed = now - transfer.transferStart.time
+  const bytes = transfer.current - transfer.transferStart.bytes
+  if (elapsed < 1000 || bytes <= 0) return null
+  return Math.round((bytes * 1000) / elapsed)
+}
+
 /** Parse an `HTTP status NNN` token out of a stringly-typed download error. */
 export function parseHttpStatus(err?: string | null): number | null {
   if (!err) return null

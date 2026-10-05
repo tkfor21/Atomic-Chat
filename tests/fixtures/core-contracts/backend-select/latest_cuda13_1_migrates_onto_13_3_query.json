@@ -1,0 +1,21 @@
+{
+  "comparator": "json-exact",
+  "expected": "b9900/win-cuda-13.1-x64",
+  "input": {
+    "backend_type": "win-cuda-13.3-x64",
+    "kind": "latest",
+    "version_backends": [
+      {
+        "backend": "win-cuda-13.1-x64",
+        "order": 0,
+        "version": "b9900"
+      }
+    ]
+  },
+  "name": "latest_cuda13_1_migrates_onto_13_3_query",
+  "source": {
+    "commit": "7ee71026dfa05e8800bebd587f728ec49b968246",
+    "file": "src-tauri/plugins/tauri-plugin-llamacpp-upstream/src/backend.rs",
+    "provider": "llamacpp-upstream"
+  }
+}

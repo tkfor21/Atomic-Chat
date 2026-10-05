@@ -28,7 +28,7 @@ import { FitBadge } from '@/containers/hub/FitBadge'
 import { ModelLogo } from '@/containers/ModelLogo'
 import { useHardwareTier } from '@/hooks/useHardwareTier'
 import { useImageArtifact } from '@/hooks/useImageArtifact'
-import { useImageSetting } from '@/hooks/useImageSetting'
+import { useSelectedArtifact } from '@/hooks/useVideoSetting'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { fitForQuant, recommendedQuant } from '@/lib/diffusion/fit'
 import { artifactId } from '@/lib/diffusion/models'
@@ -40,7 +40,10 @@ import type {
   DiffusionCatalogFamily,
   DiffusionCatalogQuant,
 } from '@/services/diffusion-catalog-registry'
-import type { ImageWorkflowId } from '@/services/diffusion/types'
+import type {
+  DiffusionModality,
+  ImageWorkflowId,
+} from '@/services/diffusion/types'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
 import { ImageArtifactDownloadButton } from './ImageArtifactDownloadButton'
 import { ImageModelRuntimeAction } from './ImageModelRuntimeAction'
@@ -48,6 +51,11 @@ import { ImageModelRuntimeAction } from './ImageModelRuntimeAction'
 type ImageModelSelectorProps = {
   /** `dialog` hides Remove and keeps the list short; `page` is the full manager. */
   variant?: 'page' | 'dialog'
+  /**
+   * Which families the list offers and which page's selection it writes:
+   * image checkpoints for the Images page, video ones for the Video page.
+   */
+  modality?: DiffusionModality
   /**
    * The workflow the list is picked for. Only families that can run it are
    * offered — the setup wizard passes nothing and offers everything.
@@ -68,11 +76,16 @@ const gb = (bytes: number) => formatBytes(bytes, 1024 ** 3)
  */
 export const ImageModelSelector = memo(function ImageModelSelector({
   variant = 'page',
+  modality = 'image',
   workflow,
   className,
   onDownloadStarted,
 }: ImageModelSelectorProps) {
   const { t } = useTranslation()
+  const noneInCatalogKey =
+    modality === 'video'
+      ? 'videos:model.noneInCatalog'
+      : 'images:model.noneInCatalog'
   const catalog = useImageGenerationStore((state) => state.catalog)
   const installedArtifacts = useImageGenerationStore(
     (state) => state.installedArtifacts
@@ -80,15 +93,14 @@ export const ImageModelSelector = memo(function ImageModelSelector({
 
   const families = useMemo(
     () =>
-      (catalog?.families ?? [])
-        .filter(
-          (family) =>
-            family.modality === 'image' &&
-            family.engines.includes('sdcpp') &&
-            (workflow === undefined ||
-              familySupportsWorkflow(family.id, workflow))
-        ),
-    [catalog, workflow]
+      (catalog?.families ?? []).filter(
+        (family) =>
+          family.modality === modality &&
+          family.engines.includes('sdcpp') &&
+          (workflow === undefined ||
+            familySupportsWorkflow(family.id, workflow))
+      ),
+    [catalog, modality, workflow]
   )
 
   const installedIds = useMemo(
@@ -140,12 +152,13 @@ export const ImageModelSelector = memo(function ImageModelSelector({
           <SetupFamilyRow
             key={family.id}
             family={family}
+            modality={modality}
             onDownloadStarted={onDownloadStarted}
           />
         ))}
         {choices.length === 0 && (
           <p className="p-3 text-sm text-muted-foreground">
-            {t('images:model.noneInCatalog')}
+            {t(noneInCatalogKey)}
           </p>
         )}
       </div>
@@ -160,21 +173,29 @@ export const ImageModelSelector = memo(function ImageModelSelector({
       {sections.installed.length > 0 && (
         <Section title={t('images:model.installed')}>
           {sections.installed.map(([family, quants]) => (
-            <FamilyBlock key={family.id} family={family} quants={quants} />
+            <FamilyBlock
+              key={family.id}
+              family={family}
+              quants={quants}
+              modality={modality}
+            />
           ))}
         </Section>
       )}
       {sections.available.length > 0 && (
         <Section title={t('images:model.available')}>
           {sections.available.map(([family, quants]) => (
-            <FamilyBlock key={family.id} family={family} quants={quants} />
+            <FamilyBlock
+              key={family.id}
+              family={family}
+              quants={quants}
+              modality={modality}
+            />
           ))}
         </Section>
       )}
       {families.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          {t('images:model.noneInCatalog')}
-        </p>
+        <p className="text-sm text-muted-foreground">{t(noneInCatalogKey)}</p>
       )}
     </div>
   )
@@ -182,9 +203,11 @@ export const ImageModelSelector = memo(function ImageModelSelector({
 
 function SetupFamilyRow({
   family,
+  modality,
   onDownloadStarted,
 }: {
   family: DiffusionCatalogFamily
+  modality: DiffusionModality
   onDownloadStarted?: (artifactId: string) => void
 }) {
   const { t } = useTranslation()
@@ -198,9 +221,7 @@ function SetupFamilyRow({
     family.transformer.quants[0]!
   const id = artifactId(family.id, quant.id)
   const artifact = useImageArtifact(id)
-  const setSelectedArtifactId = useImageSetting(
-    (state) => state.setSelectedArtifactId
-  )
+  const { setSelectedArtifactId } = useSelectedArtifact(modality)
 
   const start = () => {
     setSelectedArtifactId(id)
@@ -252,6 +273,7 @@ function SetupFamilyRow({
                 const totalBytes =
                   option.bytes +
                   (family.vae?.bytes ?? 0) +
+                  (family.audio_vae?.bytes ?? 0) +
                   family.text_encoders.reduce(
                     (sum, encoder) => sum + encoder.bytes,
                     0
@@ -265,10 +287,7 @@ function SetupFamilyRow({
                     <span className="w-16 font-mono text-[11px] font-semibold">
                       {option.label}
                     </span>
-                    <FitBadge
-                      fit={fit}
-                      className="px-2 py-0.5 text-[10px]"
-                    />
+                    <FitBadge fit={fit} className="px-2 py-0.5 text-[10px]" />
                     <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
                       {t('images:model.sizeGb', {
                         size: gb(totalBytes),
@@ -282,10 +301,7 @@ function SetupFamilyRow({
               })}
             </DropdownMenuContent>
           </DropdownMenu>
-          <FitBadge
-            fit={artifact.fit}
-            className="px-2 py-0.5 text-[10px]"
-          />
+          <FitBadge fit={artifact.fit} className="px-2 py-0.5 text-[10px]" />
           <span aria-hidden>·</span>
           <span>
             {t('images:model.sizeGb', { size: gb(artifact.totalBytes) })}
@@ -330,20 +346,17 @@ function Section({
 type FamilyBlockProps = {
   family: DiffusionCatalogFamily
   quants: DiffusionCatalogQuant[]
+  modality: DiffusionModality
 }
 
-function FamilyBlock({ family, quants }: FamilyBlockProps) {
+function FamilyBlock({ family, quants, modality }: FamilyBlockProps) {
   const { t } = useTranslation()
   const { profile } = useHardwareTier()
   const installedArtifacts = useImageGenerationStore(
     (state) => state.installedArtifacts
   )
-  const selectedArtifactId = useImageSetting(
-    (state) => state.selectedArtifactId
-  )
-  const setSelectedArtifactId = useImageSetting(
-    (state) => state.setSelectedArtifactId
-  )
+  const { selectedArtifactId, setSelectedArtifactId } =
+    useSelectedArtifact(modality)
   const generating = useImageGenerationStore((state) => state.generating)
   const installedIds = useMemo(
     () => new Set(installedArtifacts.map((item) => item.id)),
@@ -369,16 +382,11 @@ function FamilyBlock({ family, quants }: FamilyBlockProps) {
 
   useEffect(() => {
     const currentExists = quants.some((quant) => quant.id === quantId)
-    const currentIsInstalled = installedIds.has(
-      artifactId(family.id, quantId)
-    )
+    const currentIsInstalled = installedIds.has(artifactId(family.id, quantId))
     const familyHasInstalledQuant = quants.some((quant) =>
       installedIds.has(artifactId(family.id, quant.id))
     )
-    if (
-      !currentExists ||
-      (familyHasInstalledQuant && !currentIsInstalled)
-    ) {
+    if (!currentExists || (familyHasInstalledQuant && !currentIsInstalled)) {
       setQuantId(initialQuantId ?? quants[0]?.id ?? '')
     }
   }, [family.id, initialQuantId, installedIds, quantId, quants])
@@ -528,7 +536,25 @@ function FamilyBlock({ family, quants }: FamilyBlockProps) {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <span className="min-w-0 flex-1" />
+        {/* Before anything is on disk the row reads like a menu row — quant,
+            fit, size, Download — so the choice needs no click. The meta takes
+            the spacer's place; a spacer beside it would cost one more gap. */}
+        {hasDownloadedQuant ? (
+          <span className="min-w-0 flex-1" />
+        ) : (
+          <span
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            data-testid="image-model-download-meta"
+          >
+            <FitBadge
+              fit={artifact.fit}
+              className="shrink-0 px-2 py-0.5 text-[10px]"
+            />
+            <span className="min-w-0 truncate whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
+              {t('images:model.sizeGb', { size: gb(artifact.totalBytes) })}
+            </span>
+          </span>
+        )}
 
         {!hasDownloadedQuant && (
           <ImageArtifactDownloadButton
@@ -542,6 +568,7 @@ function FamilyBlock({ family, quants }: FamilyBlockProps) {
           <ImageModelRuntimeAction
             artifactId={id}
             modelName={family.name}
+            modality={modality}
             disabled={generating}
           />
         )}
@@ -660,18 +687,16 @@ function AvailableQuantRow({
   const optionId = artifactId(family.id, option.id)
   const artifact = useImageArtifact(optionId)
   const fit = fitForQuant(family, option, profile, { teOnCpu: IS_MACOS }).fit
-  const totalBytes =
-    option.bytes +
-    (family.vae?.bytes ?? 0) +
-    family.text_encoders.reduce((sum, encoder) => sum + encoder.bytes, 0)
 
   return (
     <QuantDownloadRow artifact={artifact} option={option}>
       <QuantLabel label={option.label} />
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <FitBadge fit={fit} className="shrink-0 px-2 py-0.5 text-[10px]" />
+        {/* The download plan's size, as on the card: an optional file (a
+            vision projector) is not counted. */}
         <span className="min-w-0 truncate whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
-          {t('images:model.sizeGb', { size: gb(totalBytes) })}
+          {t('images:model.sizeGb', { size: gb(artifact.totalBytes) })}
         </span>
       </div>
     </QuantDownloadRow>

@@ -45,11 +45,7 @@ import { useServiceHub } from '@/hooks/useServiceHub'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { isProviderConnected } from '@/lib/cloud-providers'
 import { cancelDownload } from '@/lib/downloadCancellation'
-import {
-  downloadStatusLabel,
-  formatEta,
-  formatProgressPair,
-} from '@/lib/downloadFormat'
+import { formatDownloadReadout } from '@/lib/downloadFormat'
 import { prettyModelName } from '@/lib/model-display-name'
 import { HUGGINGFACE_LOGO_SRC } from '@/lib/model-logo'
 import { extractModelErrorMessage } from '@/lib/modelErrorMessage'
@@ -565,16 +561,8 @@ function inFlightHint(
   t: (key: string, vars?: Record<string, unknown>) => string,
   download: InFlightDownload
 ): string {
-  const eta = download.paused
-    ? null
-    : formatEta(download.total - download.current, download.bytesPerSecond)
-  return [
-    downloadStatusLabel(t, download),
-    download.total > 0 && formatProgressPair(download.current, download.total),
-    eta && t('common:downloadPanel.left', { eta }),
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  // The panel's own formatter, so a stalled transfer reads the same here.
+  return formatDownloadReadout(t, download)
 }
 
 /**

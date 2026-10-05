@@ -1,0 +1,17 @@
+{
+  "comparator": "json-exact",
+  "expected": {
+    "error": "No backends available"
+  },
+  "input": {
+    "has_enough_gpu_memory": true,
+    "kind": "prioritize",
+    "version_backends": []
+  },
+  "name": "prioritize_empty_catalog_rejected",
+  "source": {
+    "commit": "7ee71026dfa05e8800bebd587f728ec49b968246",
+    "file": "src-tauri/plugins/tauri-plugin-llamacpp-upstream/src/backend.rs",
+    "provider": "llamacpp-upstream"
+  }
+}

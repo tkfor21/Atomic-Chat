@@ -32,6 +32,7 @@
   "hub": "허브",
   "models": "모델",
   "images": "Images",
+  "video": "Video",
   "media": "Media",
   "launch": "연동",
   "api": "API",
@@ -474,5 +475,12 @@
     "title": "플러그인",
     "emptySkills": "아직 스킬이 없습니다",
     "manageSkills": "스킬 관리"
+  },
+  "desktopNotification": {
+    "modelReadyTitle": "모델 다운로드 완료",
+    "modelReadyBody": "{{name}}을(를) 사용할 수 있습니다.",
+    "engineReadyTitle": "엔진 설치 완료",
+    "chatEngineReadyBody": "llama.cpp에서 모델을 실행할 수 있습니다.",
+    "mediaEngineReadyBody": "이미지 및 동영상 엔진이 준비되었습니다."
   }
 }

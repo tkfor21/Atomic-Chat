@@ -4,6 +4,10 @@ import {
   getBackendExePath,
   isBackendInstalled,
   fetchRemoteBackends,
+  listSupportedBackends,
+  loadCatalog,
+  catalogSnapshot,
+  parseVersionBackendSetting,
   getBackendArchiveName,
   getBackendDownloadUrl,
   BUNDLED_BASELINE_TAG,
@@ -14,11 +18,12 @@ import {
   listInstalledBackendPacks,
   deleteBackendPack,
   mergeBackendOptions,
+  cleanupIncompleteBackends,
 } from '../backend'
 import { BUNDLED_MANIFEST_BASELINE } from '../bundledManifestBaseline'
 import UPSTREAM_MANIFEST_FIXTURE from '../../../../tests/fixtures/registries/upstream-manifest.json'
-import { getSystemInfo } from '../hardware'
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+import { getBackendCatalog } from '../adapter/coreRuntime'
+import type { CoreBackendCatalog } from '../adapter/coreRuntime'
 import { fs, getJanDataFolderPath } from '@janhq/core'
 import { getLocalInstalledBackendsInternal } from '../../../../src-tauri/plugins/tauri-plugin-llamacpp-upstream/guest-js/index'
 
@@ -38,11 +43,9 @@ vi.mock('@janhq/core', () => ({
     emit: vi.fn(),
   },
 }))
-vi.mock('../hardware', () => ({
-  getSystemInfo: vi.fn(),
-}))
-vi.mock('@tauri-apps/plugin-http', () => ({
-  fetch: vi.fn(),
+// The catalog is the core's answer (ADR 2026-09-27); this module only asks.
+vi.mock('../adapter/coreRuntime', () => ({
+  getBackendCatalog: vi.fn(),
 }))
 vi.mock('../util', () => ({
   getProxyConfig: vi.fn(() => undefined),
@@ -71,15 +74,6 @@ describe('Backend functions', () => {
     vi.clearAllMocks()
     // Mock getJanDataFolderPath explicitly to a simple path
     vi.mocked(getJanDataFolderPath).mockResolvedValue('/path/to/jan')
-
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'linux',
-      cpu: {
-        arch: 'x86_64',
-        extensions: [],
-      },
-      gpus: [],
-    } as any)
 
     // Default mock for isBackendInstalled dependencies
     vi.mocked(fs.existsSync).mockImplementation(async (path: string) => {
@@ -137,6 +131,30 @@ describe('Backend functions', () => {
           { version: 'b10205', backend: 'win-cuda-12.4-x64', order: 0 },
         ])
       ).toBe('b10205/win-cuda-13.3-x64')
+    })
+
+    it('resolves the arm64 CUDA 13 family only against arm64 assets', () => {
+      const remote = [
+        { version: 'b11344', backend: 'win-cuda-13.5-x64', order: 0 },
+        { version: 'b11344', backend: 'win-cuda-13.4-arm64', order: 0 },
+      ]
+      expect(resolveGpuFamilyConcrete('win-cuda-13-arm64', remote)).toBe(
+        'b11344/win-cuda-13.4-arm64'
+      )
+      expect(resolveGpuFamilyConcrete('win-cuda-13-x64', remote)).toBe(
+        'b11344/win-cuda-13.5-x64'
+      )
+      expect(
+        isConcreteOfGpuFamily('win-cuda-13-arm64', 'win-cuda-13.4-x64')
+      ).toBe(false)
+    })
+
+    it('labels the Windows arm64 variants', () => {
+      expect(friendlyBackendLabel('win-cpu-arm64')).toBe('CPU')
+      expect(friendlyBackendLabel('win-opencl-adreno-arm64')).toBe(
+        'OpenCL (Adreno)'
+      )
+      expect(friendlyBackendLabel('win-cuda-13-arm64')).toBe('CUDA 13')
     })
 
     it('resolves the version-less ROCm family to the published HIP asset', () => {
@@ -289,95 +307,106 @@ describe('Backend functions', () => {
   })
 })
 
-describe('fetchRemoteBackends (atomic-chat-conf manifest, ATO-199)', () => {
-  // Mirrors the static manifest in atomic-chat-conf/backends/manifest.json:
-  // a GitHub release shape ({ tag_name, assets: [{ name }] }).
-  const MANIFEST = {
-    $schema: './schema.json',
-    updated_at: '2026-07-31T13:26:25Z',
-    tag_name: 'b10205',
-    assets: [
-      { name: 'llama-b10205-bin-win-cpu-x64.zip' },
-      { name: 'llama-b10205-bin-win-cuda-12.4-x64.zip' },
-      { name: 'llama-b10205-bin-win-cuda-13.3-x64.zip' },
-      { name: 'llama-b10205-bin-win-vulkan-x64.zip' },
-      { name: 'llama-b10205-bin-ubuntu-x64.tar.gz' },
-      { name: 'llama-b10205-bin-ubuntu-vulkan-x64.tar.gz' },
-      { name: 'llama-b10205-bin-macos-arm64.tar.gz' },
-      { name: 'cudart-llama-bin-win-cuda-12.4-x64.zip' },
-      { name: 'cudart-llama-bin-win-cuda-13.3-x64.zip' },
+describe('backend catalog from the core', () => {
+  const catalogOf = (over: Partial<CoreBackendCatalog> = {}): CoreBackendCatalog => ({
+    provider: 'llamacpp-upstream',
+    os_type: 'windows',
+    arch_suffix: 'x64',
+    hardware_source: 'probe',
+    features: {},
+    supported_backends: [],
+    remote: [
+      { version: 'b10205', backend: 'win-cpu-x64', order: 0 },
+      { version: 'b10205', backend: 'win-cuda-13.3-x64', order: 0 },
     ],
-  }
-
-  const RAW_MANIFEST_URL =
-    'https://raw.githubusercontent.com/AtomicBot-ai/atomic-chat-conf/main/backends/manifest.json'
-
-  const okResponse = (body: unknown) =>
-    ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => body,
-    }) as unknown as Response
+    installed: [{ version: 'b10100', backend: 'win-cpu-x64', order: 0 }],
+    available: [
+      { version: 'b10205', backend: 'win-cpu-x64', order: 0 },
+      { version: 'b10205', backend: 'win-cuda-13.3-x64', order: 0 },
+      { version: 'b10100', backend: 'win-cpu-x64', order: 0 },
+    ],
+    recommended: 'b10205/win-cuda-13.3-x64',
+    recommended_installed: 'b10100/win-cpu-x64',
+    latest_by_type: {
+      'win-cpu-x64': 'b10205/win-cpu-x64',
+      'win-cuda-13.3-x64': 'b10205/win-cuda-13.3-x64',
+    },
+    static_variants: ['win-cpu-x64', 'win-cuda-13-x64'],
+    source: 'manifest',
+    ...over,
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(tauriFetch).mockResolvedValue(okResponse(MANIFEST))
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('web fetch unavailable'))
-    )
+    vi.mocked(getBackendCatalog).mockResolvedValue(catalogOf())
   })
 
-  afterEach(() => {
-    vi.restoreAllMocks()
+  it('reads the manifest half and the hardware-gated half of the one answer', async () => {
+    // A fresh read: the memo may hold a previous test's catalog.
+    const catalog = await loadCatalog({ force: true })
+
+    await expect(fetchRemoteBackends()).resolves.toEqual(catalog.remote)
+    await expect(listSupportedBackends()).resolves.toEqual(catalog.available)
+    // Three reads, one round trip.
+    expect(getBackendCatalog).toHaveBeenCalledTimes(1)
   })
 
-  it('returns the bundled baseline when every manifest transport fails', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'windows',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
-    vi.mocked(tauriFetch).mockResolvedValue({
-      ok: false,
-      status: 503,
-      headers: { get: () => null },
-      json: async () => ({}),
-    } as unknown as Response)
-    vi.mocked(globalThis.fetch).mockRejectedValue(new Error('offline'))
+  it('asks the core once per session and again only when forced', async () => {
+    await loadCatalog({ force: true, appVersion: '2.0.0' })
+    await loadCatalog()
+    await fetchRemoteBackends()
+    expect(getBackendCatalog).toHaveBeenCalledTimes(1)
+    expect(getBackendCatalog).toHaveBeenCalledWith({
+      force: true,
+      app_version: '2.0.0',
+      proxy: null,
+    })
 
-    // How many Windows variants the baseline carries changes with every synced
-    // tag, so assert the tag rather than the count.
-    const backends = await fetchRemoteBackends()
-    expect(backends.length).toBeGreaterThan(0)
-    expect(
-      backends.every((backend) => backend.version === BUNDLED_BASELINE_TAG)
-    ).toBe(true)
+    const newer = catalogOf({
+      remote: [{ version: 'b10344', backend: 'win-cpu-x64', order: 0 }],
+    })
+    vi.mocked(getBackendCatalog).mockResolvedValue(newer)
+
+    // The "check for engine updates" path: a release published while the app
+    // was open is invisible to the session copy, which is what `force` defeats.
+    await expect(fetchRemoteBackends({ force: true })).resolves.toEqual(
+      newer.remote
+    )
+    expect(getBackendCatalog).toHaveBeenCalledTimes(2)
+    expect(getBackendCatalog).toHaveBeenLastCalledWith({
+      force: true,
+      app_version: null,
+      proxy: null,
+    })
+    expect(catalogSnapshot()).toEqual(newer)
   })
 
-  it('follows a manifest tag newer than the bundled baseline', async () => {
-    // Derived from the baseline instead of written out: a literal here would
-    // silently stop testing "newer" the moment the baseline caught up to it.
-    const newerTag = `b${Number(BUNDLED_BASELINE_TAG.slice(1)) + 1}`
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'windows',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
-    vi.mocked(tauriFetch).mockResolvedValue(
-      okResponse({
-        ...MANIFEST,
-        tag_name: newerTag,
-        assets: [{ name: `llama-${newerTag}-bin-win-cpu-x64.zip` }],
-      })
+  it('asks the core again on refresh without forcing a refetch of the release stream', async () => {
+    // A backend installed from a file never passes through the core; only a new answer sees it,
+    // and `configureBackends` decides from what is installed.
+    await loadCatalog({ force: true })
+    const withNewPack = catalogOf({
+      installed: [{ version: 'b99999', backend: 'win-cpu-x64', order: 1 }],
+    })
+    vi.mocked(getBackendCatalog).mockResolvedValue(withNewPack)
+    await expect(loadCatalog({ refresh: true })).resolves.toEqual(withNewPack)
+    expect(getBackendCatalog).toHaveBeenCalledTimes(2)
+    expect(getBackendCatalog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ force: false })
     )
+    await loadCatalog()
+    expect(getBackendCatalog).toHaveBeenCalledTimes(2)
+  })
 
-    const backends = await fetchRemoteBackends({ force: true })
+  it('keeps the last good answer when a forced read fails', async () => {
+    const good = await loadCatalog({ force: true })
+    vi.mocked(getBackendCatalog).mockRejectedValue(new Error('core unreachable'))
 
-    expect(new Set(backends.map((backend) => backend.version))).toEqual(
-      new Set([newerTag])
-    )
+    await expect(loadCatalog({ force: true })).rejects.toThrow('core unreachable')
+
+    expect(catalogSnapshot()).toEqual(good)
+    // And the memo still serves it without another round trip.
+    await expect(listSupportedBackends()).resolves.toEqual(good.available)
   })
 
   it('ships a baseline generated from the committed manifest fixture', () => {
@@ -390,112 +419,91 @@ describe('fetchRemoteBackends (atomic-chat-conf manifest, ATO-199)', () => {
     expect(BUNDLED_MANIFEST_BASELINE.download_base).toBe(
       (UPSTREAM_MANIFEST_FIXTURE as { download_base?: string }).download_base
     )
+    expect(BUNDLED_BASELINE_TAG).toBe(UPSTREAM_MANIFEST_FIXTURE.tag_name)
   })
+})
 
-  it('resolves the manifest from raw atomic-chat-conf, not api.github.com', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'windows',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
+describe('parseVersionBackendSetting', () => {
+  // The plugin's `handle_setting_update`, ported: same inputs, same answers.
+  const identity = async (backend: string) => backend
+  const legacy = async (backend: string) =>
+    backend === 'win-cuda-cu12.0-x64' ? 'win-cuda-12.4-x64' : backend
 
-    await fetchRemoteBackends({ force: true })
-
-    expect(tauriFetch).toHaveBeenCalledTimes(2)
-    for (const [calledUrl] of vi.mocked(tauriFetch).mock.calls) {
-      expect(calledUrl).toBe(RAW_MANIFEST_URL)
-      expect(calledUrl).not.toContain('api.github.com')
-    }
-  })
-
-  it('returns the whitelisted Windows backend catalog', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'windows',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
-
-    const backends = await fetchRemoteBackends()
-    const names = backends.map((b) => b.backend).sort()
-
-    expect(names).toEqual([
-      'win-cpu-x64',
-      'win-cuda-12.4-x64',
+  it.each([
+    [
+      'a first pick with nothing stored',
+      'b10205/win-cuda-13.3-x64',
+      undefined,
+      identity,
+      { backend_type_updated: true, effective_backend_type: 'win-cuda-13.3-x64', version: 'b10205', backend: 'win-cuda-13.3-x64' },
+    ],
+    [
+      'the same type as stored',
+      'b10344/win-cuda-13.3-x64',
       'win-cuda-13.3-x64',
-      'win-vulkan-x64',
-    ])
-    // cudart companions are not surfaced as backends.
-    expect(names).not.toContain('cudart-llama-bin-win-cuda-12.4-x64')
-    backends.forEach((b) => expect(b.version).toBe('b10205'))
+      identity,
+      { backend_type_updated: false, effective_backend_type: 'win-cuda-13.3-x64', version: 'b10344', backend: 'win-cuda-13.3-x64' },
+    ],
+    [
+      'a different type than stored',
+      'b10344/win-vulkan-x64',
+      'win-cuda-13.3-x64',
+      identity,
+      { backend_type_updated: true, effective_backend_type: 'win-vulkan-x64', version: 'b10344', backend: 'win-vulkan-x64' },
+    ],
+    [
+      'a BOM and padding left by a PowerShell-generated file',
+      '﻿ b10205 / macos-arm64 ',
+      undefined,
+      identity,
+      { backend_type_updated: true, effective_backend_type: 'macos-arm64', version: 'b10205', backend: 'macos-arm64' },
+    ],
+    [
+      'a legacy id, reported as its migrated type while the raw id stays for the install',
+      'b10205/win-cuda-cu12.0-x64',
+      'win-cuda-cu12.0-x64',
+      legacy,
+      { backend_type_updated: true, effective_backend_type: 'win-cuda-12.4-x64', version: 'b10205', backend: 'win-cuda-cu12.0-x64' },
+    ],
+  ])('parses %s', async (_name, value, stored, mapBackend, expected) => {
+    await expect(
+      parseVersionBackendSetting(value, stored, mapBackend)
+    ).resolves.toEqual({ ...expected, needs_backend_installation: true })
   })
 
-  it('returns cpu + vulkan for Linux x64', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'linux',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
+  it.each([['b10205'], ['a/b/c'], ['/win-cpu-x64'], ['b10205/'], [''], ['﻿']])(
+    'rejects %j as the Rust command did',
+    async (value) => {
+      await expect(
+        parseVersionBackendSetting(value, undefined, identity)
+      ).rejects.toThrow('Invalid backend format')
+    }
+  )
+})
 
-    const backends = await fetchRemoteBackends()
-    const names = backends.map((b) => b.backend).sort()
-
-    expect(names).toEqual(['linux-cpu-x64', 'linux-vulkan-x64'])
-    backends.forEach((b) => expect(b.version).toBe('b10205'))
+describe('cleanupIncompleteBackends', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getJanDataFolderPath).mockResolvedValue(MOCK_JAN_PATH_STRING)
   })
 
-  it('returns the arm64 build on an Apple Silicon Mac', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'macos',
-      cpu: { arch: 'arm64', extensions: [] },
-      gpus: [],
-    } as any)
+  it('removes a pack without llama-server but leaves an install the core is staging', async () => {
+    const root = `${MOCK_JAN_PATH_STRING}/llamacpp-upstream/backends`
+    vi.mocked(fs.readdirSync).mockImplementation(async (path: string) =>
+      path === root
+        ? ['b10205']
+        : path === `${root}/b10205`
+          ? ['macos-arm64', 'macos-arm64.incoming-1700000000000']
+          : []
+    )
+    // Only the backends root exists; neither pack has an executable yet.
+    vi.mocked(fs.existsSync).mockImplementation(async (path: string) => path === root)
 
-    const backends = await fetchRemoteBackends({ force: true })
+    const removed = await cleanupIncompleteBackends()
 
-    expect(backends).toEqual([
-      { version: 'b10205', backend: 'macos-arm64', order: 0 },
-    ])
-    expect(tauriFetch).toHaveBeenCalled()
-  })
-
-  it('offers nothing to an Intel Mac, even if the manifest grows an arm64-only tag', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'macos',
-      cpu: { arch: 'x86_64', extensions: [] },
-      gpus: [],
-    } as any)
-
-    const backends = await fetchRemoteBackends({ force: true })
-
-    // macOS keeps the merged list unfiltered downstream, so an unfiltered
-    // parser would hand an Intel host an arm64 build it cannot run. Runtime
-    // updates on macOS are Apple Silicon only; Intel stays on its bundle.
-    expect(backends).toEqual([])
-  })
-
-  it('falls back to the bundled baseline on macOS when every transport fails', async () => {
-    vi.mocked(getSystemInfo).mockResolvedValue({
-      os_type: 'macos',
-      cpu: { arch: 'arm64', extensions: [] },
-      gpus: [],
-    } as any)
-    vi.mocked(tauriFetch).mockResolvedValue({
-      ok: false,
-      status: 503,
-      headers: { get: () => null },
-      json: async () => ({}),
-    } as unknown as Response)
-    vi.mocked(globalThis.fetch).mockRejectedValue(new Error('offline'))
-
-    const backends = await fetchRemoteBackends({ force: true })
-
-    expect(backends).toEqual([
-      {
-        version: BUNDLED_BASELINE_TAG,
-        backend: 'macos-arm64',
-        order: 0,
-      },
-    ])
+    expect(removed).toEqual(['b10205/macos-arm64'])
+    expect(fs.rm).toHaveBeenCalledTimes(1)
+    expect(fs.rm).toHaveBeenCalledWith(`${root}/b10205/macos-arm64`)
   })
 })
 

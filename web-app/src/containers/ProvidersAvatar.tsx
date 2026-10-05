@@ -56,7 +56,11 @@ const ProvidersAvatar = ({
     <img
       src={logoSrc}
       alt={`${provider.provider} - Logo`}
-      className={cn('object-contain rounded-full', className)}
+      className={cn(
+        'object-contain rounded-full',
+        provider.provider === 'edenai' && 'dark:invert',
+        className
+      )}
       style={{
         imageRendering: '-webkit-optimize-contrast',
       }}

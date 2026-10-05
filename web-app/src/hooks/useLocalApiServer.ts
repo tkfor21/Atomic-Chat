@@ -39,7 +39,7 @@ type LocalApiServerState = {
   // Server request timeout (default 600 sec)
   proxyTimeout: number
   setProxyTimeout: (value: number) => void
-  // Settings → Remote & LAN: bring the Cloudflare tunnel up every time the
+  // Remote & LAN: bring the Cloudflare tunnel up every time the
   // Local API Server comes up. The tunnel URL itself is never persisted: it is
   // new on every start.
   remoteAccessAutoStart: boolean

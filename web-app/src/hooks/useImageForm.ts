@@ -89,15 +89,25 @@ const EMPTY_INPUTS: ImageWorkflowInputs = {
   referenceImages: [],
 }
 
+/** Whose numbers the draft holds. Persisted with them. */
+export type ImageFormOwner = {
+  /** The family the size and sampling numbers are for; null before the first model. */
+  recipeFamily: string | null
+}
+
 type ImageFormState = ImageFormDraft &
   ImageWorkflowKnobs &
-  ImageWorkflowInputs & {
+  ImageWorkflowInputs &
+  ImageFormOwner & {
     /** Merge a partial draft in; the one write path every control uses. */
     patch: (
       draft: Partial<ImageFormDraft & ImageWorkflowKnobs & ImageWorkflowInputs>
     ) => void
-    /** Replace the whole draft, e.g. from a recipe. */
-    applyDraft: (draft: ImageFormDraft) => void
+    /**
+     * Replace the whole draft, e.g. from a recipe, together with the family
+     * its numbers are for, so picking that recipe's model keeps them.
+     */
+    applyDraft: (draft: ImageFormDraft, recipeFamily?: string | null) => void
     /** A new source: the mask painted over the old one is meaningless now. */
     setSourceImage: (source: ImageSourceFile | null) => void
     clearMask: () => void
@@ -109,12 +119,20 @@ type ImageFormState = ImageFormDraft &
      */
     resetToDefaults: (defaults: DiffusionFamilyDefaults) => void
     /**
-     * Clamp the draft to what the loaded model accepts. Called when a model
-     * loads, so a size or step count left over from a different family cannot
-     * be submitted. The workflow is the route's business, not this one's:
-     * an unsupported workflow is reported at Generate, not silently swapped.
+     * Clamp the draft to what a model accepts, so a size or step count out of
+     * its ranges cannot be submitted. The workflow is the route's business,
+     * not this one's: an unsupported workflow is reported at Generate, not
+     * silently swapped.
      */
     clampTo: (capabilities: ImageCapabilities) => void
+    /**
+     * Make the draft the page's model's. Another family's numbers give way to
+     * this one's defaults — a FLUX checkpoint at Qwen's 40 steps and cfg 6
+     * produces garbage — while the same family's are only clamped. Called for
+     * the model the page works with, picked or loaded, so what the user set
+     * before starting a model survives the start.
+     */
+    adoptModel: (familyId: string, capabilities: ImageCapabilities) => void
   }
 
 /** Parse the seed field. Empty or non-numeric means "engine picks". */
@@ -163,10 +181,15 @@ export const useImageForm = create<ImageFormState>()(
       ...DEFAULT_IMAGE_FORM,
       ...DEFAULT_WORKFLOW_KNOBS,
       ...EMPTY_INPUTS,
+      recipeFamily: null,
 
       patch: (draft) => set(draft),
 
-      applyDraft: (draft) => set({ ...draft }),
+      applyDraft: (draft, recipeFamily) =>
+        set({
+          ...draft,
+          ...(recipeFamily !== undefined ? { recipeFamily } : {}),
+        }),
 
       setSourceImage: (source) =>
         set((state) => ({
@@ -221,10 +244,12 @@ export const useImageForm = create<ImageFormState>()(
         const [minSteps, maxSteps] = capabilities.ranges.steps
         const width = snapDim(state.width, constraints)
         const height = snapDim(state.height, constraints)
+        const snapped = width !== state.width || height !== state.height
         set({
           width,
           height,
-          aspect: matchAspect(width, height),
+          // An untouched size keeps the user's aspect pick, Custom included.
+          aspect: snapped ? matchAspect(width, height) : state.aspect,
           steps: clampInt(state.steps, minSteps, maxSteps),
           batchSize: clampInt(state.batchSize, 1, Math.max(1, capabilities.maxBatch)),
           runs: clampInt(state.runs, 1, MAX_IMAGE_RUNS),
@@ -232,6 +257,14 @@ export const useImageForm = create<ImageFormState>()(
             ? (state.guidance ?? capabilities.defaults.guidance ?? null)
             : null,
         })
+      },
+
+      adoptModel: (familyId, capabilities) => {
+        if (get().recipeFamily !== familyId) {
+          get().resetToDefaults(capabilities.defaults)
+          set({ recipeFamily: familyId })
+        }
+        get().clampTo(capabilities)
       },
     }),
     {
@@ -258,6 +291,7 @@ export const useImageForm = create<ImageFormState>()(
         sides: state.sides,
         upscaleFactor: state.upscaleFactor,
         upscaleStrength: state.upscaleStrength,
+        recipeFamily: state.recipeFamily,
       }),
     }
   )

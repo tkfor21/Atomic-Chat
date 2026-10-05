@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { IconChevronDown, IconPhoto } from '@tabler/icons-react'
+import { IconChevronDown, IconMovie, IconPhoto } from '@tabler/icons-react'
 
 import {
   Popover,
@@ -7,14 +7,12 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { ModelLogo } from '@/containers/ModelLogo'
-import { useImageArtifact } from '@/hooks/useImageArtifact'
 import { useImageForm } from '@/hooks/useImageForm'
-import { useImageSetting } from '@/hooks/useImageSetting'
+import { useMediaTarget } from '@/hooks/useMediaTarget'
 import { useTranslation } from '@/i18n/react-i18next-compat'
-import { parseArtifactId } from '@/lib/diffusion/models'
-import { familySupportsWorkflow } from '@/lib/diffusion/workflows'
 import { DIFFUSION_FAMILY_ICON_KEYS } from '@/lib/model-logo'
 import { cn } from '@/lib/utils'
+import type { DiffusionModality } from '@/services/diffusion/types'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
 import { ImageModelRuntimeAction } from './ImageModelRuntimeAction'
 import { ImageModelSelector } from './ImageModelSelector'
@@ -22,6 +20,12 @@ import { ImageModelSelector } from './ImageModelSelector'
 type ImageModelPickerProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /**
+   * The page the picker serves. It shows and selects only that modality's
+   * checkpoints: a resident video model is not the Images page's model, and
+   * the other way round.
+   */
+  modality?: DiffusionModality
 }
 
 /**
@@ -32,53 +36,21 @@ type ImageModelPickerProps = {
 export const ImageModelPicker = memo(function ImageModelPicker({
   open,
   onOpenChange,
+  modality = 'image',
 }: ImageModelPickerProps) {
   const { t } = useTranslation()
   const status = useImageGenerationStore((state) => state.status)
-  const loadingArtifactId = useImageGenerationStore(
-    (state) => state.loadingArtifactId
-  )
-  const unloadingArtifactId = useImageGenerationStore(
-    (state) => state.unloadingArtifactId
-  )
-  const selectedArtifactId = useImageSetting(
-    (state) => state.selectedArtifactId
-  )
-  const loadedArtifactId = status?.model.loaded?.modelId ?? null
-  const runtimeArtifactId =
-    loadedArtifactId ?? loadingArtifactId ?? unloadingArtifactId
-  const runtime = useImageArtifact(runtimeArtifactId ?? '')
-  const selected = useImageArtifact(selectedArtifactId ?? '')
+  const { artifactId: displayArtifactId, artifact: displayArtifact } =
+    useMediaTarget(modality)
   const workflow = useImageForm((state) => state.workflow)
-  const runtimeFamilyId =
-    runtime.family?.id ?? parseArtifactId(runtimeArtifactId ?? '')?.family ?? null
-  const runtimeCompatible =
-    Boolean(runtimeArtifactId) &&
-    (runtimeFamilyId === null || familySupportsWorkflow(runtimeFamilyId, workflow))
-  const selectedFamilyId =
-    selected.family?.id ??
-    parseArtifactId(selectedArtifactId ?? '')?.family ??
-    null
-  const selectedCompatible =
-    Boolean(selectedArtifactId && selected.complete) &&
-    (selectedFamilyId === null ||
-      familySupportsWorkflow(selectedFamilyId, workflow))
-  const displayArtifactId = runtimeCompatible
-    ? runtimeArtifactId
-    : selectedCompatible
-      ? selectedArtifactId
-      : null
-  const displayArtifact = useImageArtifact(displayArtifactId ?? '')
   const showArtifact = Boolean(displayArtifactId && displayArtifact.complete)
 
-  // Prefer the resident/in-flight artifact, then the user's compatible
-  // installed selection. This keeps an intentionally stopped model visible so
-  // its adjacent status control can start it again without reopening the list.
-
   const loadedName = status?.model.loaded?.displayName ?? null
+  const selectLabel =
+    modality === 'video' ? t('videos:model.select') : t('images:model.select')
   const name = showArtifact
-    ? (displayArtifact.family?.name ?? loadedName ?? t('images:model.select'))
-    : t('images:model.select')
+    ? (displayArtifact.family?.name ?? loadedName ?? selectLabel)
+    : selectLabel
   const detail = showArtifact ? displayArtifact.quant?.label : null
   const stateLabel = displayArtifact.loaded
     ? t('images:model.loaded')
@@ -97,7 +69,7 @@ export const ImageModelPicker = memo(function ImageModelPicker({
           <button
             type="button"
             title={stateLabel ?? undefined}
-            aria-label={t('images:model.select')}
+            aria-label={selectLabel}
             aria-expanded={open}
             data-testid="image-models-toggle"
             className="inline-flex h-9 min-w-0 flex-1 items-center gap-2 rounded-xl border bg-background px-2.5 text-sm transition-colors duration-150 ease-out hover:bg-secondary/50 active:scale-[0.99]"
@@ -109,6 +81,8 @@ export const ImageModelPicker = memo(function ImageModelPicker({
                 author={displayArtifact.family.developer}
                 className="size-5 rounded-md"
               />
+            ) : modality === 'video' ? (
+              <IconMovie size={16} className="shrink-0 text-muted-foreground" />
             ) : (
               <IconPhoto size={16} className="shrink-0 text-muted-foreground" />
             )}
@@ -136,16 +110,23 @@ export const ImageModelPicker = memo(function ImageModelPicker({
           align="start"
           sideOffset={6}
           // A heavier shadow than the default: the panel opens over the form,
-          // which is the same white, and must read as lifted off it.
-          className="max-h-[min(60vh,480px)] w-[380px] max-w-[calc(100vw-2rem)] origin-[var(--radix-popover-content-transform-origin)] overflow-y-auto rounded-xl border bg-background/95 p-1.5 shadow-xl backdrop-blur-2xl"
+          // which is the same white, and must read as lifted off it. 400 px
+          // holds a card row of the longest quant, a fit badge, a two-digit
+          // GB size and the Download slot without cutting the size.
+          className="max-h-[min(60vh,480px)] w-[400px] max-w-[calc(100vw-2rem)] origin-[var(--radix-popover-content-transform-origin)] overflow-y-auto rounded-xl border bg-background/95 p-1.5 shadow-xl backdrop-blur-2xl"
         >
-          <ImageModelSelector variant="page" workflow={workflow} />
+          <ImageModelSelector
+            variant="page"
+            modality={modality}
+            {...(modality === 'image' ? { workflow } : {})}
+          />
         </PopoverContent>
       </Popover>
       {showArtifact && displayArtifactId && (
         <ImageModelRuntimeAction
           artifactId={displayArtifactId}
           modelName={name}
+          modality={modality}
           appearance="indicator"
         />
       )}

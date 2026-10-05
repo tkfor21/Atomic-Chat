@@ -36,6 +36,8 @@ import { DefaultUploadsService } from './uploads/default'
 import type { UploadsService } from './uploads/types'
 import { DefaultDiffusionService } from './diffusion/default'
 import type { DiffusionService } from './diffusion/types'
+import { DefaultDecisionService } from './decision/default'
+import type { DecisionService } from './decision/types'
 
 // Import service types
 import type { ThemeService } from './theme/types'
@@ -85,6 +87,7 @@ export interface ServiceHub {
   uploads(): UploadsService
   voice(): VoiceService
   diffusion(): DiffusionService
+  decision(): DecisionService
 }
 
 class PlatformServiceHub implements ServiceHub {
@@ -112,6 +115,7 @@ class PlatformServiceHub implements ServiceHub {
   private uploadsService: UploadsService = new DefaultUploadsService()
   private voiceService: VoiceService = new DefaultVoiceService()
   private diffusionService: DiffusionService = new DefaultDiffusionService()
+  private decisionService: DecisionService = new DefaultDecisionService()
   private initialized = false
 
   /**
@@ -147,6 +151,7 @@ class PlatformServiceHub implements ServiceHub {
           deepLinkModule,
           voiceModule,
           diffusionModule,
+          decisionModule,
         ] = await Promise.all([
           import('./theme/tauri'),
           import('./window/tauri'),
@@ -164,6 +169,7 @@ class PlatformServiceHub implements ServiceHub {
           import('./deeplink/tauri'),
           import('./voice/tauri'),
           import('./diffusion/tauri'),
+          import('./decision/tauri'),
         ])
 
         this.themeService = new themeModule.TauriThemeService()
@@ -182,6 +188,7 @@ class PlatformServiceHub implements ServiceHub {
         this.deepLinkService = new deepLinkModule.TauriDeepLinkService()
         this.voiceService = new voiceModule.TauriVoiceService()
         this.diffusionService = new diffusionModule.TauriDiffusionService()
+        this.decisionService = new decisionModule.TauriDecisionService()
       } else if (isPlatformIOS() || isPlatformAndroid()) {
         const [
           themeModule,
@@ -357,6 +364,11 @@ class PlatformServiceHub implements ServiceHub {
   diffusion(): DiffusionService {
     this.ensureInitialized()
     return this.diffusionService
+  }
+
+  decision(): DecisionService {
+    this.ensureInitialized()
+    return this.decisionService
   }
 }
 

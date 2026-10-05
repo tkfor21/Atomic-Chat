@@ -10,6 +10,8 @@ export interface CPU {
   name: string
   usage: number
   instructions?: string[] // Cortex migration: ensure instructions data ready
+  /** False when the core could not read the CPU flags (then `extensions` is empty, not "none"). */
+  extensions_known?: boolean
 }
 
 export interface GPUAdditionalInfo {
@@ -54,6 +56,10 @@ export interface HardwareData {
   total_memory: number
   os?: OS
   ram?: RAM
+  /** Where the core got these facts: its own probe, or an override injected by a host. */
+  source?: 'probe' | 'override'
+  /** Unix ms of the probe (or override) that produced these facts. */
+  probed_at?: number
 }
 
 export interface SystemUsage {

@@ -469,6 +469,99 @@ describe('useDownloadStore', () => {
       expect(result.current.downloads['model-1'].stage).toBeUndefined()
     })
 
+    // Field feedback, 2026-09-29: a quiet connection kept the last estimate,
+    // so the panel quoted a live speed and ETA for a stopped transfer.
+    it('drops the speed estimate when the transfer stalls or reconnects', () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = renderHook(() => useDownloadStore())
+        act(() => {
+          result.current.updateProgress('model-1', 0.1, 'model-1', 0, 1000)
+        })
+        act(() => {
+          vi.advanceTimersByTime(1000)
+          result.current.updateProgress('model-1', 0.5, 'model-1', 500, 1000)
+        })
+        expect(result.current.downloads['model-1'].speed.bytesPerSecond).toBe(
+          500
+        )
+
+        for (const kind of ['stalled', 'retrying']) {
+          act(() => {
+            result.current.updateProgress('model-1', 0.5, 'model-1', 500, 1000)
+            vi.advanceTimersByTime(1000)
+            result.current.updateProgress('model-1', 0.6, 'model-1', 600, 1000)
+            result.current.updateStage('model-1', {
+              kind,
+              attempt: 1,
+              maxAttempts: 5,
+            })
+          })
+          const entry = result.current.downloads['model-1']
+          expect(entry.speed.bytesPerSecond).toBe(0)
+          expect(entry.speed.atBytes).toBe(600)
+          expect(entry.current).toBe(600)
+        }
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('counts each stall once, and every reconnect attempt', () => {
+      const { result } = renderHook(() => useDownloadStore())
+      const stalled = { kind: 'stalled', attempt: 0, maxAttempts: 5 }
+      act(() => {
+        result.current.updateProgress('model-1', 0.1, 'model-1', 100, 1000)
+        result.current.updateStage('model-1', stalled)
+        result.current.updateStage('model-1', stalled)
+        result.current.updateStage('model-1', {
+          kind: 'retrying',
+          attempt: 1,
+          maxAttempts: 5,
+        })
+        result.current.updateStage('model-1', {
+          kind: 'retrying',
+          attempt: 2,
+          maxAttempts: 5,
+        })
+        result.current.updateProgress('model-1', 0.2, 'model-1', 200, 1000)
+        result.current.updateStage('model-1', stalled)
+      })
+
+      const entry = result.current.downloads['model-1']
+      expect(entry.stalls).toBe(2)
+      expect(entry.retries).toBe(2)
+    })
+
+    it('remembers where the run started, and starts over on a restart', () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = renderHook(() => useDownloadStore())
+        act(() => {
+          result.current.updateProgress('model-1', 0.4, 'model-1', 400, 1000)
+        })
+        const start = result.current.downloads['model-1'].transferStart
+        expect(start?.bytes).toBe(400)
+
+        act(() => {
+          vi.advanceTimersByTime(1000)
+          result.current.updateProgress('model-1', 0.6, 'model-1', 600, 1000)
+        })
+        expect(result.current.downloads['model-1'].transferStart).toEqual(
+          start
+        )
+
+        act(() => {
+          result.current.updateProgress('model-1', 0, 'model-1', 0, 1000)
+        })
+        expect(result.current.downloads['model-1'].transferStart?.bytes).toBe(
+          0
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('creates an entry for a download that has not reported bytes yet', () => {
       // The first stage event arrives before any progress event, because the
       // preflight ladder runs before a single byte is requested.
@@ -484,6 +577,7 @@ describe('useDownloadStore', () => {
 
       const entry = result.current.downloads['model-1']
       expect(entry).toBeDefined()
+      expect(entry.name).toBe('model-1')
       expect(entry.total).toBe(0)
       expect(entry.stage?.kind).toBe('connecting')
     })

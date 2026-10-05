@@ -113,6 +113,7 @@ export default defineConfig(({ mode }) => {
       IS_ANDROID: JSON.stringify(
         process.env.TAURI_ENV_PLATFORM?.includes('android') ?? false
       ),
+      IS_ARM64: JSON.stringify(process.env.TAURI_ENV_ARCH === 'aarch64'),
       PLATFORM: JSON.stringify(process.env.TAURI_ENV_PLATFORM),
 
       VERSION: JSON.stringify(packageJson.version),

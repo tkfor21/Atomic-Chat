@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   attachmentExt,
+  averageBytesPerSecond,
   chatHttpStatus,
   classifyChatFailure,
   classifyDownloadFailure,
@@ -549,5 +550,35 @@ describe('classifyDownloadFailure', () => {
     expect(
       classifyDownloadFailure('No space left on device (os error 28)')
     ).toBe('disk_io')
+  })
+})
+
+describe('averageBytesPerSecond', () => {
+  const now = 1_000_000
+
+  it('divides the bytes this run moved by the time it took', () => {
+    expect(
+      averageBytesPerSecond(
+        { current: 5_000, transferStart: { bytes: 1_000, time: now - 2_000 } },
+        now
+      )
+    ).toBe(2_000)
+  })
+
+  it('says nothing about a run too short or too empty to measure', () => {
+    expect(averageBytesPerSecond(undefined, now)).toBeNull()
+    expect(averageBytesPerSecond({ current: 5_000 }, now)).toBeNull()
+    expect(
+      averageBytesPerSecond(
+        { current: 5_000, transferStart: { bytes: 1_000, time: now - 500 } },
+        now
+      )
+    ).toBeNull()
+    expect(
+      averageBytesPerSecond(
+        { current: 1_000, transferStart: { bytes: 1_000, time: now - 5_000 } },
+        now
+      )
+    ).toBeNull()
   })
 })

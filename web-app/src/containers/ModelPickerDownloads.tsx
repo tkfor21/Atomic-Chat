@@ -1,5 +1,6 @@
-import { ModelLogo } from '@/containers/ModelLogo'
+import { Button } from '@/components/ui/button'
 import { useTranslation } from '@/i18n/react-i18next-compat'
+import { HUGGINGFACE_LOGO_SRC } from '@/lib/model-logo'
 
 /** The picker stays runnable-only; this action leaves for the full Model Hub. */
 export function HuggingFaceAction({ onClick }: { onClick: () => void }) {
@@ -8,20 +9,24 @@ export function HuggingFaceAction({ onClick }: { onClick: () => void }) {
 
   return (
     <div className="shrink-0 border-t p-2">
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="sm"
         aria-label={label}
         onClick={onClick}
-        className="flex h-11 w-full min-w-0 items-center justify-center gap-2.5 rounded-full border border-border/80 bg-secondary/70 px-3 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="w-full min-w-0"
         data-testid="model-picker-hugging-face-action"
       >
-        <ModelLogo
-          author="Hugging Face"
-          fallback="huggingface"
-          className="size-7 rounded-none border-0 bg-transparent dark:bg-transparent"
+        <img
+          src={HUGGINGFACE_LOGO_SRC}
+          alt=""
+          aria-hidden
+          draggable={false}
+          className="size-4 shrink-0 object-contain"
         />
         <span className="min-w-0 truncate">{label}</span>
-      </button>
+      </Button>
     </div>
   )
 }

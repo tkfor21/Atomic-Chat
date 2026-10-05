@@ -126,7 +126,8 @@ export const ImageViewer = memo(function ImageViewer({
 
   const restore = () => {
     const { draft, modelId } = restoreDraftFromRecipe(item.recipe, runs)
-    applyDraft(draft)
+    // The numbers are the recipe model's: picking that model keeps them.
+    applyDraft(draft, item.recipe.model.family)
     captureImageGalleryAction('restore_recipe')
     if (modelDiffers) {
       setSelectedArtifactId(modelId)

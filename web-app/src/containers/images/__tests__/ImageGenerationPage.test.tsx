@@ -89,8 +89,14 @@ describe('ImageGenerationPage', () => {
       lastError: { code: 'ENGINE_UPDATE_REQUIRED', message: 'Update required' },
     })
     render(<ImageGenerationPage workflow="create" search={{}} />)
+    expect(screen.getByTestId('image-error-banner')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'images:errors.actions.updateEngine' }))
     expect(update).toHaveBeenCalledTimes(1)
+    // The banner steps aside while the update runs, and the fix is the
+    // in-place update, not the install wizard.
+    expect(useImageGenerationStore.getState().lastError).toBeNull()
+    expect(screen.queryByTestId('image-error-banner')).not.toBeInTheDocument()
+    expect(useImageGenerationStore.getState().setupOpen).toBe(false)
     update.mockRestore()
   })
 
@@ -179,6 +185,23 @@ describe('ImageGenerationPage', () => {
 
     expect(screen.getByTestId('image-setup-card')).toBeInTheDocument()
     expect(useImageGenerationStore.getState().setupOpen).toBe(false)
+  })
+
+  it('installs the engine straight from the install action, with no wizard', async () => {
+    const install = vi
+      .spyOn(useImageGenerationStore.getState(), 'installEngine')
+      .mockResolvedValue()
+    useImageGenerationStore.setState({
+      status: makeStatus({ install: { state: 'not-installed' } }),
+      lastError: { code: 'ENGINE_MISSING', message: 'x' },
+    })
+    await renderPage()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'images:errors.actions.install' })
+    )
+    expect(install).toHaveBeenCalledOnce()
+    expect(useImageGenerationStore.getState().setupOpen).toBe(false)
+    install.mockRestore()
   })
 
   it('keeps existing images in view next to the setup card', async () => {

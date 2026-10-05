@@ -317,7 +317,8 @@ describe('model selector geometry', () => {
             within(footer).getByText('Download from Hugging Face')
           )
           const footerBounds = footer.getBoundingClientRect()
-          expect(footerBounds.height).toBeCloseTo(44, 0)
+          // A regular small button, not a tall call-to-action.
+          expect(footerBounds.height).toBeCloseTo(32, 0)
           const footerStyle = getComputedStyle(footer)
           const renderedRadius = Math.min(
             parseFloat(footerStyle.borderTopLeftRadius),
@@ -327,11 +328,9 @@ describe('model selector geometry', () => {
           expect(renderedRadius).toBeCloseTo(footerBounds.height / 2, 0)
           expect(footerStyle.backgroundColor).not.toBe('rgba(0, 0, 0, 0)')
           expect(parseFloat(footerStyle.borderTopWidth)).toBeGreaterThan(0)
-          const logo = within(footer).getByRole('img', {
-            name: 'Hugging Face',
-          }).parentElement as HTMLElement
-          expect(logo.getBoundingClientRect().width).toBeCloseTo(28, 0)
-          expect(logo.getBoundingClientRect().height).toBeCloseTo(28, 0)
+          const logo = footer.querySelector('img') as HTMLElement
+          expect(logo.getBoundingClientRect().width).toBeCloseTo(16, 0)
+          expect(logo.getBoundingClientRect().height).toBeCloseTo(16, 0)
         })
       }
     }

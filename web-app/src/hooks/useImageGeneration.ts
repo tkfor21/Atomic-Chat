@@ -4,11 +4,17 @@ import { useShallow } from 'zustand/shallow'
 import { readFileBytes } from '@/lib/readFileBytes'
 import { drawOutpaint, loadImage } from '@/containers/images/canvas'
 import { parseSeedText, useImageForm } from '@/hooks/useImageForm'
-import { useImageSetting } from '@/hooks/useImageSetting'
+import { useMediaTarget } from '@/hooks/useMediaTarget'
+import { previewImageCapabilities } from '@/lib/diffusion/capabilities'
+import { workflowNeedsLlmVision } from '@/lib/diffusion/models'
 import { anySide, outpaintGeometry } from '@/lib/diffusion/outpaint'
 import { fitWithin, scaleWithin, type DimConstraints } from '@/lib/diffusion/size'
 import { MAX_SOURCE_IMAGE_BYTES, workflowSpec } from '@/lib/diffusion/workflows'
-import type { ImageGenerateRequest, ImageJob } from '@/services/diffusion/types'
+import type {
+  ImageCapabilities,
+  ImageGenerateRequest,
+  ImageJob,
+} from '@/services/diffusion/types'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
 
 /** Why Generate is disabled, as an `images:form.disabled.<reason>` key. */
@@ -31,6 +37,16 @@ export type ImageGenerationHandle = {
   stopRequested: boolean
   /** The resident model is this one and its capabilities are known. */
   modelReady: boolean
+  /** The checkpoint Generate runs, started first when it is stopped. */
+  targetArtifactId: string | null
+  /** Its family, whose numbers the form holds. */
+  targetFamilyId: string | null
+  /**
+   * What the target can do: the core's report once it is resident, the
+   * catalog's preview of it before, so the form is shaped for the model
+   * from the moment it is picked.
+   */
+  capabilities: ImageCapabilities | null
   canGenerate: boolean
   disabledReason: GenerateDisabledReason | null
   /** The request the form would submit right now (Extend's canvases are built at generate time). */
@@ -52,7 +68,8 @@ const FALLBACK_CONSTRAINTS: DimConstraints = {
 /**
  * Bridges the persisted form and the generation store: builds the request,
  * decides whether Generate is allowed (and why not), and forwards the two
- * verbs. No state of its own.
+ * verbs. No state of its own. A picked model that is not running does not
+ * block Generate: Generate starts it and then generates.
  *
  * The workflow decides the shape of the request. sd.cpp resizes the init
  * image to the requested size itself, so the size is the one lever:
@@ -84,18 +101,17 @@ export function useImageGeneration(): ImageGenerationHandle {
       referenceImages: state.referenceImages,
     }))
   )
-  const selectedArtifactId = useImageSetting(
-    (state) => state.selectedArtifactId
-  )
+  const target = useMediaTarget('image')
   const {
     status,
-    capabilities,
+    capabilities: residentCapabilities,
     currentJob,
     runsTotal,
     runsDone,
     stopRequested,
     generating,
     loadingArtifactId,
+    loadModel,
     startGeneration,
     stop,
   } = useImageGenerationStore(
@@ -108,17 +124,44 @@ export function useImageGeneration(): ImageGenerationHandle {
       stopRequested: state.stopRequested,
       generating: state.generating,
       loadingArtifactId: state.loadingArtifactId,
+      loadModel: state.loadModel,
       startGeneration: state.startGeneration,
       stop: state.stop,
     }))
   )
 
   const engineInstalled = status?.install.state === 'installed'
-  const loadedId = status?.model.loaded?.modelId ?? null
+  const targetArtifactId = target.artifactId
+  const targetFamily = targetArtifactId ? target.artifact.family : null
   const modelReady =
+    targetArtifactId !== null &&
     status?.model.state === 'loaded' &&
-    capabilities !== null &&
-    (selectedArtifactId === null || loadedId === selectedArtifactId)
+    target.artifact.loaded &&
+    residentCapabilities !== null
+  const previewCapabilities = useMemo(
+    () => (targetFamily ? previewImageCapabilities(targetFamily) : null),
+    [targetFamily]
+  )
+  const capabilities = modelReady ? residentCapabilities : previewCapabilities
+  // The target is resident but its report is still being read (a start from
+  // elsewhere, the app launching): starting it again would be a reload.
+  const targetResident =
+    targetArtifactId !== null &&
+    status?.model.loaded?.modelId === targetArtifactId
+  const readingResident = targetResident && residentCapabilities === null
+  // Resident without this mode, and a restart would not add it: the one
+  // part loaded on demand is a family's vision encoder, for the modes that
+  // need it.
+  const restartAddsWorkflow =
+    workflowNeedsLlmVision(form.workflow) &&
+    Boolean(
+      targetFamily?.text_encoders.some((file) => file.field === 'llm_vision')
+    )
+  const residentLacksWorkflow =
+    targetResident &&
+    residentCapabilities !== null &&
+    !residentCapabilities.workflows.includes(form.workflow) &&
+    !restartAddsWorkflow
 
   const baseSeed = parseSeedText(form.seedText)
   const spec = workflowSpec(form.workflow)
@@ -224,11 +267,17 @@ export function useImageGeneration(): ImageGenerationHandle {
     ? 'busy'
     : !engineInstalled
       ? 'noEngine'
-      : loadingArtifactId
+      : loadingArtifactId || readingResident
         ? 'modelLoading'
-        : !modelReady
-          ? 'noModel'
-          : capabilities && !capabilities.workflows.includes(form.workflow)
+        : targetArtifactId === null
+          ? // Nothing to run. A resident model that cannot do this mode is
+            // why, when there is one; otherwise none is installed or picked.
+            residentCapabilities &&
+            !residentCapabilities.workflows.includes(form.workflow)
+            ? 'unsupportedWorkflow'
+            : 'noModel'
+          : residentLacksWorkflow ||
+              (capabilities && !capabilities.workflows.includes(form.workflow))
             ? 'unsupportedWorkflow'
             : spec.needsSource && !form.sourceImage
               ? 'noSource'
@@ -241,7 +290,19 @@ export function useImageGeneration(): ImageGenerationHandle {
                     : null
 
   const generate = useCallback(async () => {
-    if (disabledReason) return
+    if (disabledReason || targetArtifactId === null) return
+    if (!modelReady) {
+      // Start the picked model first. A failed start leaves its error on
+      // the page and nothing is submitted.
+      await loadModel(targetArtifactId)
+      // What the model turns out not to support is the store's to report.
+      const after = useImageGenerationStore.getState()
+      if (
+        after.status?.model.loaded?.modelId !== targetArtifactId ||
+        after.capabilities === null
+      )
+        return
+    }
     let submitted = request
     if (form.workflow === 'extend' && form.sourceImage) {
       const source = form.sourceImage
@@ -271,7 +332,17 @@ export function useImageGeneration(): ImageGenerationHandle {
       }
     }
     await startGeneration({ request: submitted, runs: form.runs, baseSeed })
-  }, [disabledReason, startGeneration, request, form, baseSeed, constraints])
+  }, [
+    disabledReason,
+    targetArtifactId,
+    modelReady,
+    loadModel,
+    startGeneration,
+    request,
+    form,
+    baseSeed,
+    constraints,
+  ])
 
   return {
     generating,
@@ -280,6 +351,9 @@ export function useImageGeneration(): ImageGenerationHandle {
     runsDone,
     stopRequested,
     modelReady,
+    targetArtifactId,
+    targetFamilyId: target.familyId,
+    capabilities,
     canGenerate: disabledReason === null,
     disabledReason,
     request,

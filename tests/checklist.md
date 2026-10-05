@@ -36,7 +36,7 @@ Before testing, set-up the following in the old version to make sure that we can
 
 #### In `Settings -> General`:
 - [ ] Ensure the `App Data` path is the same  
-- [ ] Click Open Logs, App Log will show 
+- [ ] Click Open Logs: the window shows both App and Core entries in one timeline, each marked App or Core 
 	
 #### In `Settings -> Model Providers`:
 - [ ] Llama.cpp still listed downloaded models and user can chat with the models
@@ -56,6 +56,8 @@ Before testing, set-up the following in the old version to make sure that we can
 - [ ] Ensure `Community` links work and point to the correct website 
 - [ ] Ensure the `Check for Updates` function detect the correct latest version 
 - [ ] [ENG] Create a folder with un-standard character as title (e.g. Chinese character) => change the `App data` location to that folder => test that model is still able to load and run properly.
+- [ ] `Export Logs` (here and in the Logs window) saves one file with a `# ` header, `[app]` and `[core]` entries, and secrets masked (`Bearer <redacted>`, `/Users/<redacted>/`); cancelling the save dialog shows nothing
+- [ ] Times have one format (`YYYY-MM-DD HH:MM:SS`, UTC) in the Logs window, `app.log`, `atomic-core/logs/core.log`, `atomic-core/core-start.log` and the export
 #### In `Interface`:
 - [ ] Toggle between different `Theme` options to check that they change accordingly and that all elements of the UI are legible with the right contrast:
 	- [ ] Light 
@@ -104,7 +106,7 @@ In `Llama.cpp`:
 
 In `Model Settings`:
 - [ ] [0.6.8] Ensure that user can change the Jinja chat template of individual model and it doesn't affect the template of other model
-- [ ] [0.6.8] Ensure we can override Tensor Buffer Type in the model settings to offload layers between GPU and CPU => Download any MoE Model (i.e., gpt-oss-20b) => Set tensor buffer type as `blk\\.([0-30]*[02468])\\.ffn_.*_exps\\.=CPU` => check if those tensors are in cpu and run inference (you can view the app.log if it contains `--override-tensor", "blk\\\\.([0-30]*[02468])\\\\.ffn_.*_exps\\\\.=CPU`)
+- [ ] [0.6.8] Ensure we can override Tensor Buffer Type in the model settings to offload layers between GPU and CPU => Download any MoE Model (i.e., gpt-oss-20b) => Set tensor buffer type as `blk\\.([0-30]*[02468])\\.ffn_.*_exps\\.=CPU` => check if those tensors are in cpu and run inference (in the Logs window, filter Core and find the core's start line `starting llama-server for <provider>/<model>: … --override-tensor blk\\.([0-30]*[02468])\\.ffn_.*_exps\\.=CPU`)
 
 In Remote Model Providers:
 - [ ] Check that the following providers are presence:
